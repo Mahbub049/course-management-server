@@ -15,13 +15,28 @@ const app = express();
 // Middleware
 // app.use(cors());
 app.use(express.json());
-app.use(cors({
-    origin: [
-        "http://localhost:5173",
-        "https://course-management-client-puce.vercel.app/"
-    ],
-    credentials: true,
-}));
+const cors = require("cors");
+
+const allowedOrigins = [
+    "http://localhost:5173",
+    "https://course-management-client-puce.vercel.app",
+];
+
+const corsOptions = {
+    origin: function (origin, callback) {
+        if (!origin) return callback(null, true); // Postman etc.
+        if (allowedOrigins.includes(origin)) return callback(null, true);
+        return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: false, // ✅ you are using JWT header, not cookies
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
+
+
 
 
 // Routes
