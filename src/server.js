@@ -13,8 +13,16 @@ const attendanceRoutes = require('./routes/attendanceRoutes');
 const app = express();
 
 // Middleware
-app.use(cors());
+// app.use(cors());
 app.use(express.json());
+app.use(cors({
+    origin: [
+        "http://localhost:5173",
+        "https://YOUR-VERCEL-FRONTEND.vercel.app"
+    ],
+    credentials: true,
+}));
+
 
 // Routes
 app.use('/api/health', healthRoute);
