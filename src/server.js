@@ -18,7 +18,7 @@ app.use(express.json());
 app.use(cors({
     origin: [
         "http://localhost:5173",
-        "https://YOUR-VERCEL-FRONTEND.vercel.app"
+        "https://course-management-client-puce.vercel.app/"
     ],
     credentials: true,
 }));
