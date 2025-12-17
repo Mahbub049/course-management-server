@@ -19,7 +19,7 @@ app.use(express.json());
 const allowedOrigins = [
     "http://localhost:5173",
     "https://course-management-client-puce.vercel.app",
-    "bubt-courses.vercel.app"
+    "https://bubt-courses.vercel.app"
 ];
 
 const corsOptions = {
