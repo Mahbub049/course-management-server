@@ -241,35 +241,96 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
 // ---------- Controller functions ----------
 
 // GET /api/student/courses
+// GET /api/student/courses
 const getStudentCourses = async (req, res) => {
   try {
     const studentId = req.user.userId;
 
     const enrollments = await Enrollment.find({ student: studentId }).populate(
-      'course'
+      "course"
     );
 
-    const courses = enrollments
-      .map((en) => en.course)
-      .filter(Boolean)
-      .map((c) => ({
-        id: c._id.toString(),
-        code: c.code,
-        title: c.title,
-        section: c.section,
-        semester: c.semester,
-        year: c.year,
-        courseType: c.courseType,
-      }));
+    const courseDocs = enrollments.map((e) => e.course).filter(Boolean);
+    const courseIds = courseDocs.map((c) => c._id);
+
+    // Pull all assessments + marks in one go (fast)
+    const [assessments, marks] = await Promise.all([
+      Assessment.find({ course: { $in: courseIds } }),
+      Mark.find({ student: studentId, course: { $in: courseIds } }),
+    ]);
+
+    // Group assessments by course
+    const assessmentsByCourse = {};
+    for (const a of assessments) {
+      const cid = a.course.toString();
+      if (!assessmentsByCourse[cid]) assessmentsByCourse[cid] = [];
+      assessmentsByCourse[cid].push(a);
+    }
+
+    // Group marks by course + build marksByAssessment
+    const marksByCourse = {};
+    const marksByAssessmentByCourse = {};
+    for (const m of marks) {
+      const cid = m.course.toString();
+      if (!marksByCourse[cid]) marksByCourse[cid] = [];
+      marksByCourse[cid].push(m);
+
+      if (!marksByAssessmentByCourse[cid]) marksByAssessmentByCourse[cid] = {};
+      marksByAssessmentByCourse[cid][m.assessment.toString()] = m.obtainedMarks;
+    }
+
+    const courses = courseDocs.map((course) => {
+      const cid = course._id.toString();
+      const aList = assessmentsByCourse[cid] || [];
+      const mList = marksByCourse[cid] || [];
+
+      const assessmentCount = aList.length;
+      const marksCount = mList.length;
+
+      // ✅ Better status logic
+      let summaryStatus = "not_started";
+      if (assessmentCount === 0) summaryStatus = "not_started";
+      else if (marksCount === 0) summaryStatus = "not_published";
+      else if (marksCount < assessmentCount) summaryStatus = "in_progress";
+      else summaryStatus = "published";
+
+      // ✅ Only compute totals when at least one mark exists
+      let summary = null;
+      if (marksCount > 0) {
+        const computed = computeSummaryForStudent(
+          course,
+          aList,
+          marksByAssessmentByCourse[cid] || {}
+        );
+
+        summary = {
+          total: computed.currentTotal, // 👈 what dashboard expects
+          grade: computed.grade,
+          maxPossible: computed.maxPossible,
+        };
+      }
+
+      return {
+        id: cid,
+        code: course.code,
+        title: course.title,
+        section: course.section,
+        semester: course.semester,
+        year: course.year,
+        courseType: course.courseType,
+        summaryStatus,
+        summary, // ✅ NOW dashboard will show total & grade
+      };
+    });
 
     res.json(courses);
   } catch (err) {
-    console.error('getStudentCourses error', err);
-    res
-      .status(500)
-      .json({ message: 'Server error loading student courses' });
+    console.error("getStudentCourses error", err);
+    res.status(500).json({ message: "Server error loading student courses" });
   }
 };
+
+
 
 // GET /api/student/courses/:courseId
 const getStudentCourseDetails = async (req, res) => {

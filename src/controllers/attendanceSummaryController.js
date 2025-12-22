@@ -1,5 +1,8 @@
 const Course = require("../models/Course");
 const AttendanceSummary = require("../models/AttendanceSummary");
+const Attendance = require("../models/Attendance");
+const Enrollment = require("../models/Enrollment");
+
 
 // ✅ NEW imports
 const Assessment = require("../models/Assessment");
@@ -19,11 +22,11 @@ const calcPercentage = (total, attended) => {
 
 const calcMarks = (percentage) => {
   const p = Number(percentage || 0);
-  if (p > 90) return 5;
-  if (p > 80) return 4;
-  if (p > 70) return 3;
-  if (p > 60) return 2;
-  if (p > 50) return 1;
+  if (p >= 90) return 5;
+  if (p >= 80) return 4;
+  if (p >= 70) return 3;
+  if (p >= 60) return 2;
+  if (p >= 50) return 1;
   return 0;
 };
 
@@ -66,6 +69,70 @@ const getAttendanceSummary = async (req, res) => {
     res.status(500).json({ message: "Server error" });
   }
 };
+
+// GET /api/courses/:courseId/attendance-summary/from-sheet
+const getAttendanceSummaryFromSheet = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const course = await findTeacherCourse(courseId, req.user.userId);
+    if (!course) return res.status(404).json({ message: "Course not found" });
+
+    // ✅ all daily attendance entries for this course by this teacher
+    const daily = await Attendance.find({
+      course: courseId,
+      teacher: req.user.userId,
+    }).select("date numClasses records");
+
+    // ✅ total classes = sum of numClasses of all days
+    const totalClasses = daily.reduce(
+      (sum, d) => sum + Number(d.numClasses || 0),
+      0
+    );
+
+    // ✅ roll => attendedClasses count (weighted by numClasses per day)
+    const attendedByRoll = new Map();
+
+    daily.forEach((d) => {
+      const n = Number(d.numClasses || 0);
+      (d.records || []).forEach((r) => {
+        if (!r?.roll) return;
+        if (!r.present) return;
+
+        const roll = String(r.roll);
+        attendedByRoll.set(roll, (attendedByRoll.get(roll) || 0) + n);
+      });
+    });
+
+    // ✅ map roll -> studentId using Enrollment (Enrollment.student -> User)
+    const enrollments = await Enrollment.find({ course: courseId })
+      .populate("student", "username") // username = roll
+      .select("student");
+
+    const rollToStudentId = new Map();
+    enrollments.forEach((e) => {
+      const roll = e?.student?.username ? String(e.student.username) : null;
+      if (roll) rollToStudentId.set(roll, String(e.student._id));
+    });
+
+    // ✅ build records array for the frontend
+    const records = [];
+    for (const [roll, attendedClasses] of attendedByRoll.entries()) {
+      const studentId = rollToStudentId.get(roll);
+      if (!studentId) continue; // roll not enrolled / mismatch
+      records.push({
+        studentId,
+        attendedClasses: Number(attendedClasses || 0),
+      });
+    }
+
+    return res.json({ totalClasses, records });
+  } catch (err) {
+    console.error("getAttendanceSummaryFromSheet error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 
 // POST /api/courses/:courseId/attendance-summary
 // body: { records: [{ studentId, totalClasses, attendedClasses }] }
@@ -157,4 +224,5 @@ const saveAttendanceSummary = async (req, res) => {
 module.exports = {
   getAttendanceSummary,
   saveAttendanceSummary,
+  getAttendanceSummaryFromSheet,
 };

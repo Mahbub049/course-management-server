@@ -34,7 +34,9 @@ const {
 const {
   getAttendanceSummary,
   saveAttendanceSummary,
+  getAttendanceSummaryFromSheet, // ✅ ADD
 } = require("../controllers/attendanceSummaryController");
+
 
 // ✅ Helper middleware chain (order matters!)
 const teacherOnly = [authMiddleware, requireTeacher];
@@ -86,5 +88,11 @@ router.post("/:courseId/marks", ...teacherOnly, saveMarksForCourse);
 // ===================================================
 router.get("/:courseId/attendance-summary", ...teacherOnly, getAttendanceSummary);
 router.post("/:courseId/attendance-summary", ...teacherOnly, saveAttendanceSummary);
+
+router.get(
+  "/:courseId/attendance-summary/from-sheet",
+  ...teacherOnly,
+  getAttendanceSummaryFromSheet
+);
 
 module.exports = router;
