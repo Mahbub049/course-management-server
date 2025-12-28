@@ -13,51 +13,42 @@ const startKeepAlive = require("./utils/keepAlive");
 
 const app = express();
 
-
 // Middleware
-// app.use(cors());
 app.use(express.json());
-app.use("/api/health", healthRoute);
 
 const allowedOrigins = [
-    "http://localhost:5173",
-    "https://course-management-client-puce.vercel.app",
-    "https://bubt-courses.vercel.app"
+  "http://localhost:5173",
+  "https://course-management-client-puce.vercel.app",
+  "https://bubt-courses.vercel.app"
 ];
 
 const corsOptions = {
-    origin: function (origin, callback) {
-        if (!origin) return callback(null, true); // Postman etc.
-        if (allowedOrigins.includes(origin)) return callback(null, true);
-        return callback(new Error("Not allowed by CORS"));
-    },
-    credentials: false, // ✅ you are using JWT header, not cookies
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error("Not allowed by CORS"));
+  },
+  credentials: false,
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 };
 
 app.use(cors(corsOptions));
-// app.options("*", cors(corsOptions));
-
-
-
 
 // Routes
 app.use('/api/health', healthRoute);
 app.use('/api/auth', authRoute);
 app.use('/api/courses', courseRoute);
-app.use('/api/student', studentRoute); // from previous scrum
+app.use('/api/student', studentRoute);
 app.use('/api/complaints', complaintRoute);
-app.use("/api/attendance", attendanceRoutes);
-
+app.use('/api/attendance', attendanceRoutes);
 
 // Connect DB and start server
 const PORT = process.env.PORT || 5000;
 
 connectDB().then(() => {
-    app.listen(PORT, () => {
-        console.log(`Server running on port ${PORT} 🚀`);
-    });
+  app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT} 🚀`);
+    startKeepAlive(); // ✅ start after server is live
+  });
 });
-
-startKeepAlive();
