@@ -5,6 +5,7 @@
 const Enrollment = require("../models/Enrollment");
 const User = require("../models/User");
 const Course = require("../models/Course");
+const { sendMail } = require("../utils/mailer");
 
 // ---------------------------------------------
 // HELPER: Generate Random Password
@@ -359,3 +360,106 @@ exports.exportCourseStudents = async (req, res) => {
   }
 };
 
+// ===============================================================
+// 7️⃣ SEND PASSWORD EMAILS (to enrolled students)
+// ===============================================================
+exports.sendPasswordsByEmail = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    // optional custom message from teacher
+    const customMessage =
+      (req.body?.message || "").trim() ||
+      "Please use the following credentials to login. After login, change your password immediately.";
+
+    const enrollments = await Enrollment.find({ course: courseId })
+      .populate("student")
+      .populate("course")
+      .lean();
+
+    if (!enrollments.length) {
+      return res.status(404).json({ message: "No enrolled students found." });
+    }
+
+    const subject =
+      req.body?.subject?.trim() ||
+      `BUBT Marks Portal Login Credentials`;
+
+    const results = {
+      total: enrollments.length,
+      sent: 0,
+      skippedNoEmail: 0,
+      skippedNoPassword: 0,
+      failed: 0,
+      details: [],
+    };
+
+    // ⚠️ Send sequentially to avoid SMTP rate limits
+    for (const enr of enrollments) {
+      const student = enr.student;
+      const to = student?.email;
+      const username = student?.username || "";
+      const password = enr.temporaryPassword || "";
+
+      if (!to) {
+        results.skippedNoEmail++;
+        results.details.push({
+          username,
+          status: "skipped",
+          reason: "No email",
+        });
+        continue;
+      }
+
+      if (!password) {
+        results.skippedNoPassword++;
+        results.details.push({
+          username,
+          email: to,
+          status: "skipped",
+          reason: "No temporary password saved",
+        });
+        continue;
+      }
+
+      const html = `
+        <div style="font-family: Arial, sans-serif; line-height:1.6;">
+          <h3 style="margin:0 0 8px;">BUBT Marks Portal</h3>
+          <p style="margin:0 0 12px;">${customMessage}</p>
+
+          <div style="border:1px solid #e5e7eb; padding:12px; border-radius:8px;">
+            <p style="margin:0;"><b>Username (Roll):</b> ${username}</p>
+            <p style="margin:6px 0 0;"><b>Temporary Password:</b> ${password}</p>
+          </div>
+
+          <p style="margin:12px 0 0; color:#475569; font-size:13px;">
+            ⚠️ Please change your password after first login.
+          </p>
+        </div>
+      `;
+
+      try {
+        await sendMail({ to, subject, html });
+        results.sent++;
+        results.details.push({
+          username,
+          email: to,
+          status: "sent",
+        });
+      } catch (e) {
+        results.failed++;
+        results.details.push({
+          username,
+          email: to,
+          status: "failed",
+          reason: e.message,
+        });
+      }
+    }
+
+    return res.json(results);
+  } catch (err) {
+    console.error("Send Password Emails Error:", err);
+    return res.status(500).json({ message: "Failed to send emails." });
+  }
+};

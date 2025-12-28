@@ -18,6 +18,7 @@ const {
   removeStudentFromCourse,
   resetStudentPassword,
   exportCourseStudents,
+  sendPasswordsByEmail,
 } = require("../controllers/enrollmentController");
 
 const {
@@ -53,6 +54,12 @@ router.get(
 );
 
 router.post("/", ...teacherOnly, createCourse);
+router.post(
+  "/:courseId/students/send-password-emails",
+  ...teacherOnly,
+  sendPasswordsByEmail
+);
+
 router.get("/:id", ...teacherOnly, getCourseById);
 
 router.delete("/:id", ...teacherOnly, deleteCourse);
