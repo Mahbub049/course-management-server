@@ -1,25 +1,23 @@
-const cron = require("node-cron");
-const axios = require("axios");
+function normalizeUrl(u) {
+  return (u || "").trim().replace(/\/$/, "");
+}
 
-const SERVER_URL = (process.env.SERVER_URL || "").replace(/\/$/, ""); // ✅ removes trailing /
-
-function startKeepAlive() {
-  if (!SERVER_URL) {
+async function startKeepAlive() {
+  const base = normalizeUrl(process.env.SERVER_URL);
+  if (!base) {
     console.warn("⚠️ SERVER_URL not set. Keep-alive disabled.");
     return;
   }
 
-  cron.schedule("*/14 * * * *", async () => {
-    try {
-      const res = await axios.get(`${SERVER_URL}/api/health`);
-      console.log("✅ Keep-alive ping:", res.status);
-    } catch (err) {
-      const status = err?.response?.status;
-      console.error("❌ Keep-alive failed:", status ? `HTTP ${status}` : err.message);
-    }
-  });
+  const url = `${base}/api/health`;
+  const intervalMs = 14 * 60 * 1000; // 14 minutes
 
-  console.log("🟢 Keep-alive cron started:", `${SERVER_URL}/api/health`);
+  // keepalive-server uses ESM export, so in CommonJS we use dynamic import
+  const { ping } = await import("keepalive-server");
+
+  ping(intervalMs, url, 10_000); // 10s timeout
+
+  console.log("🟢 keepalive-server started:", url, `every ${intervalMs}ms`);
 }
 
 module.exports = startKeepAlive;
