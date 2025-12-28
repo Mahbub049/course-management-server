@@ -17,6 +17,7 @@ const {
   getCourseStudents,
   removeStudentFromCourse,
   resetStudentPassword,
+  exportCourseStudents,
 } = require("../controllers/enrollmentController");
 
 const {
@@ -45,6 +46,12 @@ const teacherOnly = [authMiddleware, requireTeacher];
 // ✅ COURSES
 // ===================================================
 router.get("/", ...teacherOnly, getCourses);
+router.get(
+  "/:courseId/students/export",
+  ...teacherOnly,
+  exportCourseStudents
+);
+
 router.post("/", ...teacherOnly, createCourse);
 router.get("/:id", ...teacherOnly, getCourseById);
 

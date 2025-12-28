@@ -331,3 +331,31 @@ exports.resetStudentPassword = async (req, res) => {
     return res.status(500).json({ message: "Failed to reset student password." });
   }
 };
+
+// ===============================================================
+// 6️⃣ EXPORT STUDENTS (Excel)
+// ===============================================================
+exports.exportCourseStudents = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const enrollments = await Enrollment.find({ course: courseId })
+      .populate("student")
+      .sort({ "student.username": 1 });
+
+    const rows = enrollments.map((enr) => ({
+      Roll: enr.student?.username || "",
+      Name: enr.student?.name || "",
+      Email: enr.student?.email || "",
+      Password: enr.temporaryPassword || "",
+    }));
+
+    return res.json(rows);
+  } catch (err) {
+    console.error("Export Students Error:", err);
+    return res.status(500).json({
+      message: "Failed to export students",
+    });
+  }
+};
+
