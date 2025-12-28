@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 router.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Marks Portal API is running' });
+  res.status(200).json({ status: "ok", time: new Date() });
 });
 
 module.exports = router;

@@ -9,12 +9,15 @@ const courseRoute = require('./routes/courseRoute');
 const studentRoute = require('./routes/studentRoute');
 const complaintRoute = require('./routes/complaintRoute');
 const attendanceRoutes = require('./routes/attendanceRoutes');
+const startKeepAlive = require("./utils/keepAlive");
 
 const app = express();
+
 
 // Middleware
 // app.use(cors());
 app.use(express.json());
+app.use("/api/health", healthRoute);
 
 const allowedOrigins = [
     "http://localhost:5173",
@@ -56,3 +59,5 @@ connectDB().then(() => {
         console.log(`Server running on port ${PORT} 🚀`);
     });
 });
+
+startKeepAlive();
