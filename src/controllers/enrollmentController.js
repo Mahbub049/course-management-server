@@ -5,6 +5,7 @@
 const Enrollment = require("../models/Enrollment");
 const User = require("../models/User");
 const Course = require("../models/Course");
+const Mark = require("../models/Mark"); // ✅ NEW (needed to delete marks)
 const { sendMail } = require("../utils/mailer");
 
 // ---------------------------------------------
@@ -24,6 +25,12 @@ const generateRandomPassword = (length = 8) => {
 const normalizeEmail = (email) => {
   const e = (email || "").trim();
   return e ? e : undefined; // ✅ IMPORTANT: never return null
+};
+
+// ✅ helper: ensure teacher owns the course
+const getTeacherCourseOr404 = async (courseId, teacherId) => {
+  const course = await Course.findOne({ _id: courseId, createdBy: teacherId });
+  return course;
 };
 
 // ===============================================================
@@ -231,9 +238,7 @@ exports.getCourseStudents = async (req, res) => {
   try {
     const { courseId } = req.params;
 
-    const enrollments = await Enrollment.find({ course: courseId }).populate(
-      "student"
-    );
+    const enrollments = await Enrollment.find({ course: courseId }).populate("student");
 
     const list = enrollments.map((enr) => ({
       enrollmentId: enr._id,
@@ -253,6 +258,7 @@ exports.getCourseStudents = async (req, res) => {
 
 // ===============================================================
 // 4️⃣ REMOVE STUDENT FROM COURSE  (by enrollmentId)
+// ✅ UPDATED: also delete their marks for this course
 // ===============================================================
 exports.removeStudentFromCourse = async (req, res) => {
   try {
@@ -264,17 +270,52 @@ exports.removeStudentFromCourse = async (req, res) => {
     });
 
     if (!enrollment) {
-      return res
-        .status(404)
-        .json({ message: "Enrollment not found for this course." });
+      return res.status(404).json({ message: "Enrollment not found for this course." });
     }
+
+    const studentId = enrollment.student;
+
+    // ✅ delete marks for this student in this course
+    await Mark.deleteMany({ course: courseId, student: studentId });
 
     await enrollment.deleteOne();
 
-    return res.json({ message: "Student removed from course." });
+    return res.json({ message: "Student removed from course (and marks deleted)." });
   } catch (err) {
     console.error("Remove Student Error:", err);
     return res.status(500).json({ message: "Failed to remove student." });
+  }
+};
+
+// ===============================================================
+// ✅ NEW: REMOVE ALL STUDENTS FROM COURSE
+// Deletes enrollments + marks for this course
+// DELETE /api/courses/:courseId/students
+// ===============================================================
+exports.removeAllStudentsFromCourse = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const teacherId = req.user?.userId;
+
+    // ✅ ensure teacher owns this course
+    const course = await getTeacherCourseOr404(courseId, teacherId);
+    if (!course) {
+      return res.status(404).json({ message: "Course not found (or not yours)." });
+    }
+
+    const [enrResult, markResult] = await Promise.all([
+      Enrollment.deleteMany({ course: courseId }),
+      Mark.deleteMany({ course: courseId }),
+    ]);
+
+    return res.json({
+      message: "All students removed from course.",
+      removedEnrollments: enrResult?.deletedCount || 0,
+      deletedMarks: markResult?.deletedCount || 0,
+    });
+  } catch (err) {
+    console.error("Remove All Students Error:", err);
+    return res.status(500).json({ message: "Failed to remove all students." });
   }
 };
 
@@ -291,16 +332,12 @@ exports.resetStudentPassword = async (req, res) => {
     }).populate("student");
 
     if (!enrollment) {
-      return res.status(404).json({
-        message: "Student is not enrolled in this course.",
-      });
+      return res.status(404).json({ message: "Student is not enrolled in this course." });
     }
 
     const student = enrollment.student;
     if (!student) {
-      return res.status(404).json({
-        message: "Student account not found.",
-      });
+      return res.status(404).json({ message: "Student account not found." });
     }
 
     const newPassword = generateRandomPassword();
@@ -354,9 +391,7 @@ exports.exportCourseStudents = async (req, res) => {
     return res.json(rows);
   } catch (err) {
     console.error("Export Students Error:", err);
-    return res.status(500).json({
-      message: "Failed to export students",
-    });
+    return res.status(500).json({ message: "Failed to export students" });
   }
 };
 
@@ -381,9 +416,7 @@ exports.sendPasswordsByEmail = async (req, res) => {
       return res.status(404).json({ message: "No enrolled students found." });
     }
 
-    const subject =
-      req.body?.subject?.trim() ||
-      `BUBT Marks Portal Login Credentials`;
+    const subject = req.body?.subject?.trim() || `BUBT Marks Portal Login Credentials`;
 
     const results = {
       total: enrollments.length,
@@ -403,11 +436,7 @@ exports.sendPasswordsByEmail = async (req, res) => {
 
       if (!to) {
         results.skippedNoEmail++;
-        results.details.push({
-          username,
-          status: "skipped",
-          reason: "No email",
-        });
+        results.details.push({ username, status: "skipped", reason: "No email" });
         continue;
       }
 
@@ -441,11 +470,7 @@ exports.sendPasswordsByEmail = async (req, res) => {
       try {
         await sendMail({ to, subject, html });
         results.sent++;
-        results.details.push({
-          username,
-          email: to,
-          status: "sent",
-        });
+        results.details.push({ username, email: to, status: "sent" });
       } catch (e) {
         results.failed++;
         results.details.push({
