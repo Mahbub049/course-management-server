@@ -9,6 +9,7 @@ const {
   getCourses,
   getCourseById,
   deleteCourse,
+  updateCourse,
 } = require("../controllers/courseController");
 
 const {
@@ -52,6 +53,9 @@ router.post("/:courseId/students/send-password-emails", ...teacherOnly, sendPass
 router.get("/:id", ...teacherOnly, getCourseById);
 
 router.delete("/:id", ...teacherOnly, deleteCourse);
+
+router.put("/:id", ...teacherOnly, updateCourse);
+
 
 // ===================================================
 // ✅ STUDENTS (Enrollment)

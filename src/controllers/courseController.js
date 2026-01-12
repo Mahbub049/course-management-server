@@ -104,18 +104,24 @@ const updateCourse = async (req, res) => {
   try {
     const teacherId = req.user.userId;
     const id = req.params.courseId || req.params.id;
-    const { code, title, section, semester, year, courseType } = req.body;
 
-    const update = {
-      code,
-      title,
-      section,
-      semester,
-      year,
-    };
+    const { title, section, semester, year, courseType } = req.body;
+
+    // ✅ build update dynamically (avoid undefined overwrite)
+    const update = {};
+
+    if (title !== undefined) update.title = String(title).trim();
+    if (section !== undefined) update.section = String(section).trim();
+    if (semester !== undefined) update.semester = String(semester).trim();
+    if (year !== undefined) update.year = Number(year);
 
     if (courseType && ALLOWED_COURSE_TYPES.includes(courseType)) {
-      update.courseType = courseType;
+      update.courseType = String(courseType).toLowerCase();
+    }
+
+    // ✅ prevent empty title
+    if ("title" in update && !update.title) {
+      return res.status(400).json({ message: "Title is required." });
     }
 
     const course = await Course.findOneAndUpdate(
@@ -125,13 +131,13 @@ const updateCourse = async (req, res) => {
     );
 
     if (!course) {
-      return res.status(404).json({ message: 'Course not found' });
+      return res.status(404).json({ message: "Course not found" });
     }
 
     res.json(course);
   } catch (err) {
-    console.error('Update course error', err);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Update course error", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -166,6 +172,7 @@ const deleteCourse = async (req, res) => {
     res.status(500).json({ message: 'Server error' });
   }
 };
+
 
 module.exports = {
   createCourse,
