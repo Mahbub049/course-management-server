@@ -3,19 +3,25 @@ const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const User = require("../models/User");
 
-function dateOnly(d) {
-  const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  return x;
+function parseYMD(dateStr) {
+  const [y, m, d] = String(dateStr).split("-").map(Number);
+  return { y, m, d };
 }
 
+// ✅ Always store the exact day as UTC midnight
+function dateOnly(dateStr) {
+  const { y, m, d } = parseYMD(dateStr);
+  return new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+}
+
+// ✅ Day range in UTC (safe for queries)
 function dayRange(dateStr) {
-  const start = new Date(dateStr);
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(dateStr);
-  end.setHours(23, 59, 59, 999);
+  const { y, m, d } = parseYMD(dateStr);
+  const start = new Date(Date.UTC(y, m - 1, d, 0, 0, 0, 0));
+  const end = new Date(Date.UTC(y, m - 1, d, 23, 59, 59, 999));
   return { start, end };
 }
+
 
 // -------------------- CREATE (single period) --------------------
 const createAttendance = async (req, res) => {
