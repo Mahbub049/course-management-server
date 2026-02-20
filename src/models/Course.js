@@ -19,7 +19,7 @@ const courseSchema = new mongoose.Schema(
     year: {
       type: Number,
     },
-       courseType: {
+    courseType: {
       type: String,
       enum: ['theory', 'lab', 'hybrid'],
       default: 'theory',
@@ -29,6 +29,8 @@ const courseSchema = new mongoose.Schema(
       ref: 'User',
       required: true, // teacher
     },
+    archived: { type: Boolean, default: false },
+    archivedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

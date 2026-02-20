@@ -59,10 +59,25 @@ const getCourses = async (req, res) => {
   try {
     const teacherId = req.user.userId;
 
-    const courses = await Course.find({ createdBy: teacherId })
-      .sort({ year: -1, semester: 1, code: 1 });
+    const archivedParam = req.query.archived;
+    const archived = archivedParam === "true";
 
-    // Return a very clean, string-based payload
+    let filter = { createdBy: teacherId };
+
+    if (archived) {
+      // Archived tab → only archived = true
+      filter.archived = true;
+    } else {
+      // My Courses → archived = false OR field does not exist (old data)
+      filter.$or = [
+        { archived: false },
+        { archived: { $exists: false } }
+      ];
+    }
+
+    const courses = await Course.find(filter)
+      .sort({ createdAt: -1 });
+
     const formatted = courses.map((c) => ({
       id: c._id.toString(),
       code: c.code,
@@ -71,12 +86,13 @@ const getCourses = async (req, res) => {
       semester: c.semester,
       year: c.year,
       courseType: c.courseType,
+      archived: c.archived ?? false,
     }));
 
     res.json(formatted);
   } catch (err) {
-    console.error('Get courses error', err);
-    res.status(500).json({ message: 'Server error' });
+    console.error("getCourses error:", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
@@ -105,7 +121,7 @@ const updateCourse = async (req, res) => {
     const teacherId = req.user.userId;
     const id = req.params.courseId || req.params.id;
 
-    const { title, section, semester, year, courseType } = req.body;
+    const { title, section, semester, year, courseType, archived } = req.body;
 
     // ✅ build update dynamically (avoid undefined overwrite)
     const update = {};
@@ -117,6 +133,12 @@ const updateCourse = async (req, res) => {
 
     if (courseType && ALLOWED_COURSE_TYPES.includes(courseType)) {
       update.courseType = String(courseType).toLowerCase();
+    }
+
+    if (archived !== undefined) {
+      const isArchived = archived === true || archived === "true";
+      update.archived = isArchived;
+      update.archivedAt = isArchived ? new Date() : null;
     }
 
     // ✅ prevent empty title
