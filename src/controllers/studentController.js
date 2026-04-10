@@ -8,9 +8,8 @@ const Mark = require('../models/Mark');
 // ---------- Helpers for course type / weighting ----------
 
 const getCourseType = (course) => {
-  return (course?.courseType || "theory").toLowerCase();
+  return (course?.courseType || 'theory').toLowerCase();
 };
-
 
 const lower = (str) => (str || '').toLowerCase();
 
@@ -64,31 +63,24 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
       const pctNow = getPct(id, full);
       const hasThis = full > 0;
 
-      // ✅ For LAB courses: everything except Mid/Final/Attendance is treated as Lab Assessment
       if (
-        !name.includes("mid") &&
-        !name.includes("final") &&
-        !name.includes("att") &&
-        !name.includes("attendance")
+        !name.includes('mid') &&
+        !name.includes('final') &&
+        !name.includes('att') &&
+        !name.includes('attendance')
       ) {
         labPctsNow.push(pctNow);
         if (hasThis) labPctsFull.push(1);
-      }
-      else if (name.includes('mid')) {
+      } else if (name.includes('mid')) {
         midPctNow = pctNow;
         midPctFull = hasThis ? 1 : 0;
       } else if (name.includes('final')) {
         finalPctNow = pctNow;
         finalPctFull = hasThis ? 1 : 0;
-      } else if (
-        name.includes("att") ||
-        name.includes("attendance")
-      ) {
+      } else if (name.includes('att') || name.includes('attendance')) {
         attPctNow = pctNow;
         attPctFull = hasThis ? 1 : 0;
       }
-
-
     });
 
     const avgNow =
@@ -206,7 +198,6 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
   let assignPresFull = 0;
 
   if (hasAssignment && hasPresentation) {
-    // 5 + 5 split
     assignPresNow = assignPctNow * 5 + presPctNow * 5;
     assignPresFull = assignPctFull * 5 + presPctFull * 5;
   } else if (hasAssignment) {
@@ -241,23 +232,32 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
 // ---------- Controller functions ----------
 
 // GET /api/student/courses
-// GET /api/student/courses
 const getStudentCourses = async (req, res) => {
   try {
     const studentId = req.user.userId;
 
     const enrollments = await Enrollment.find({ student: studentId }).populate(
-      "course"
+      'course'
     );
 
     const courseDocs = enrollments.map((e) => e.course).filter(Boolean);
     const courseIds = courseDocs.map((c) => c._id);
 
-    // Pull all assessments + marks in one go (fast)
+    // Only published assessments should be visible to students
     const [assessments, marks] = await Promise.all([
-      Assessment.find({ course: { $in: courseIds } }),
-      Mark.find({ student: studentId, course: { $in: courseIds } }),
+      Assessment.find({
+        course: { $in: courseIds },
+        isPublished: true,
+      }).sort({ order: 1, createdAt: 1 }),
+      Mark.find({
+        student: studentId,
+        course: { $in: courseIds },
+      }),
     ]);
+
+    const publishedAssessmentIds = new Set(
+      assessments.map((a) => a._id.toString())
+    );
 
     // Group assessments by course
     const assessmentsByCourse = {};
@@ -267,16 +267,20 @@ const getStudentCourses = async (req, res) => {
       assessmentsByCourse[cid].push(a);
     }
 
-    // Group marks by course + build marksByAssessment
+    // Group only marks that belong to published assessments
     const marksByCourse = {};
     const marksByAssessmentByCourse = {};
     for (const m of marks) {
+      const assessmentId = m.assessment.toString();
+      if (!publishedAssessmentIds.has(assessmentId)) continue;
+
       const cid = m.course.toString();
+
       if (!marksByCourse[cid]) marksByCourse[cid] = [];
       marksByCourse[cid].push(m);
 
       if (!marksByAssessmentByCourse[cid]) marksByAssessmentByCourse[cid] = {};
-      marksByAssessmentByCourse[cid][m.assessment.toString()] = m.obtainedMarks;
+      marksByAssessmentByCourse[cid][assessmentId] = m.obtainedMarks;
     }
 
     const courses = courseDocs.map((course) => {
@@ -287,14 +291,12 @@ const getStudentCourses = async (req, res) => {
       const assessmentCount = aList.length;
       const marksCount = mList.length;
 
-      // ✅ Better status logic
-      let summaryStatus = "not_started";
-      if (assessmentCount === 0) summaryStatus = "not_started";
-      else if (marksCount === 0) summaryStatus = "not_published";
-      else if (marksCount < assessmentCount) summaryStatus = "in_progress";
-      else summaryStatus = "published";
+      let summaryStatus = 'not_started';
+      if (assessmentCount === 0) summaryStatus = 'not_published';
+      else if (marksCount === 0) summaryStatus = 'not_published';
+      else if (marksCount < assessmentCount) summaryStatus = 'in_progress';
+      else summaryStatus = 'published';
 
-      // ✅ Only compute totals when at least one mark exists
       let summary = null;
       if (marksCount > 0) {
         const computed = computeSummaryForStudent(
@@ -304,7 +306,7 @@ const getStudentCourses = async (req, res) => {
         );
 
         summary = {
-          total: computed.currentTotal, // 👈 what dashboard expects
+          total: computed.currentTotal,
           grade: computed.grade,
           maxPossible: computed.maxPossible,
         };
@@ -319,18 +321,16 @@ const getStudentCourses = async (req, res) => {
         year: course.year,
         courseType: course.courseType,
         summaryStatus,
-        summary, // ✅ NOW dashboard will show total & grade
+        summary,
       };
     });
 
     res.json(courses);
   } catch (err) {
-    console.error("getStudentCourses error", err);
-    res.status(500).json({ message: "Server error loading student courses" });
+    console.error('getStudentCourses error', err);
+    res.status(500).json({ message: 'Server error loading student courses' });
   }
 };
-
-
 
 // GET /api/student/courses/:courseId
 const getStudentCourseDetails = async (req, res) => {
@@ -351,14 +351,22 @@ const getStudentCourseDetails = async (req, res) => {
 
     const course = enrollment.course;
 
-    const assessments = await Assessment.find({ course: courseId }).sort({
+    // Only published assessments
+    const assessments = await Assessment.find({
+      course: courseId,
+      isPublished: true,
+    }).sort({
       order: 1,
       createdAt: 1,
     });
 
+    const publishedAssessmentIds = assessments.map((a) => a._id);
+
+    // Only marks for published assessments
     const marks = await Mark.find({
       course: courseId,
       student: studentId,
+      assessment: { $in: publishedAssessmentIds },
     });
 
     const marksByAssessment = {};
@@ -373,6 +381,8 @@ const getStudentCourseDetails = async (req, res) => {
         _id: a._id.toString(),
         name: a.name,
         fullMarks: a.fullMarks,
+        isPublished: a.isPublished,
+        publishedAt: a.publishedAt,
         obtainedMarks: obtained,
       };
     });
@@ -394,7 +404,6 @@ const getStudentCourseDetails = async (req, res) => {
         courseType: course.courseType,
       },
       assessments: assessmentsResponse,
-      // legacy-style fields (in case frontend reads them)
       totalObtained: summary.totalObtained,
       grade: summary.grade,
       aPlusInfo: summary.aPlusInfo,
@@ -404,9 +413,7 @@ const getStudentCourseDetails = async (req, res) => {
     });
   } catch (err) {
     console.error('getStudentCourseDetails error', err);
-    res
-      .status(500)
-      .json({ message: 'Server error loading course details' });
+    res.status(500).json({ message: 'Server error loading course details' });
   }
 };
 

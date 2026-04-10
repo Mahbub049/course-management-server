@@ -199,6 +199,8 @@ const updateAssessment = async (req, res) => {
   }
 };
 
+
+
 /**
  * DELETE /api/courses/assessments/:assessmentId
  * Also deletes all marks under that assessment.
@@ -231,9 +233,46 @@ const deleteAssessment = async (req, res) => {
   }
 };
 
+const publishAssessment = async (req, res) => {
+  try {
+    const { courseId, assessmentId } = req.params;
+
+    const course = await Course.findOne({
+      _id: courseId,
+      createdBy: req.user.userId,
+    });
+
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    const assessment = await Assessment.findOne({
+      _id: assessmentId,
+      course: courseId,
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ message: 'Assessment not found' });
+    }
+
+    assessment.isPublished = true;
+    assessment.publishedAt = new Date();
+    await assessment.save();
+
+    res.json({
+      message: `${assessment.name} published successfully`,
+      assessment,
+    });
+  } catch (err) {
+    console.error('Publish assessment error:', err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 module.exports = {
   createAssessment,
   getAssessmentsForCourse,
   updateAssessment,
   deleteAssessment,
+  publishAssessment,
 };

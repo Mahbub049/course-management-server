@@ -28,6 +28,7 @@ const {
   createAssessment,
   updateAssessment,
   deleteAssessment,
+  publishAssessment,
 } = require("../controllers/assessmentController");
 
 const { getMarksForCourse, saveMarksForCourse } = require("../controllers/markController");
@@ -93,5 +94,8 @@ router.get("/:courseId/attendance-summary", ...teacherOnly, getAttendanceSummary
 router.post("/:courseId/attendance-summary", ...teacherOnly, saveAttendanceSummary);
 
 router.get("/:courseId/attendance-summary/from-sheet", ...teacherOnly, getAttendanceSummaryFromSheet);
+
+
+router.post("/:courseId/assessments/:assessmentId/publish", ...teacherOnly, publishAssessment);
 
 module.exports = router;
