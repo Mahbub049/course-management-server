@@ -36,6 +36,10 @@ const userSchema = new mongoose.Schema(
     joiningDate: {
       type: Date,
     },
+    profileImage: {
+      type: String,
+      default: "",
+    },
 
     passwordHash: {
       type: String,

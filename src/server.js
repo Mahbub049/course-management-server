@@ -14,26 +14,33 @@ const startKeepAlive = require("./utils/keepAlive");
 const app = express();
 
 // Middleware
-app.use(express.json());
+// Middleware
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      const allowedOrigins = [
+        "http://localhost:5173",
+        "https://course-management-client-puce.vercel.app",
+        "https://bubt-courses.vercel.app",
+      ];
 
-const allowedOrigins = [
-  "http://localhost:5173",
-  "https://course-management-client-puce.vercel.app",
-  "https://bubt-courses.vercel.app"
-];
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
 
-const corsOptions = {
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) return callback(null, true);
-    return callback(new Error("Not allowed by CORS"));
-  },
-  credentials: false,
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-};
+      return callback(new Error("Not allowed by CORS"));
+    },
+    credentials: true, // 🔥 change this
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
 
-app.use(cors(corsOptions));
+// 🔥 VERY IMPORTANT (fix preflight)
+app.options(/.*/, cors());
+
+// 🔥 VERY IMPORTANT (fix image upload size)
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 
 // Routes
 app.use('/api/health', healthRoute);

@@ -240,7 +240,9 @@ const getStudentCourses = async (req, res) => {
       'course'
     );
 
-    const courseDocs = enrollments.map((e) => e.course).filter(Boolean);
+    const courseDocs = enrollments
+      .map((e) => e.course)
+      .filter((course) => course && course.archived !== true);
     const courseIds = courseDocs.map((c) => c._id);
 
     // Only published assessments should be visible to students
@@ -350,6 +352,12 @@ const getStudentCourseDetails = async (req, res) => {
     }
 
     const course = enrollment.course;
+
+    if (course.archived === true) {
+      return res.status(404).json({
+        message: 'Course not found for this student',
+      });
+    }
 
     // Only published assessments
     const assessments = await Assessment.find({
