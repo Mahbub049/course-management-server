@@ -9,6 +9,46 @@ const Mark = require('../models/Mark');
 // const Complaint = require('../models/Complaint');
 
 const ALLOWED_COURSE_TYPES = ['theory', 'lab', 'hybrid'];
+const ALLOWED_CT_POLICY_MODES = [
+  'best_n_individual_scaled',
+  'best_n_average_scaled',
+  'best_one_scaled',
+  'manual_average_scaled',
+];
+
+const sanitizeClassTestPolicy = (raw = {}) => {
+  const mode = ALLOWED_CT_POLICY_MODES.includes(raw?.mode)
+    ? raw.mode
+    : 'best_n_average_scaled';
+
+  const bestCountRaw = Number(raw?.bestCount);
+  const totalWeightRaw = Number(raw?.totalWeight);
+
+  const bestCount =
+    mode === 'best_one_scaled'
+      ? 1
+      : Number.isFinite(bestCountRaw) && bestCountRaw > 0
+        ? Math.floor(bestCountRaw)
+        : 2;
+
+  const totalWeight =
+    Number.isFinite(totalWeightRaw) && totalWeightRaw >= 0
+      ? totalWeightRaw
+      : 15;
+
+  const manualSelectedAssessmentIds = Array.isArray(raw?.manualSelectedAssessmentIds)
+    ? raw.manualSelectedAssessmentIds
+      .map((id) => String(id).trim())
+      .filter(Boolean)
+    : [];
+
+  return {
+    mode,
+    bestCount,
+    totalWeight,
+    manualSelectedAssessmentIds,
+  };
+};
 
 // POST /api/courses  (teacher only)
 const createCourse = async (req, res) => {
@@ -121,7 +161,15 @@ const updateCourse = async (req, res) => {
     const teacherId = req.user.userId;
     const id = req.params.courseId || req.params.id;
 
-    const { title, section, semester, year, courseType, archived } = req.body;
+    const {
+      title,
+      section,
+      semester,
+      year,
+      courseType,
+      archived,
+      classTestPolicy,
+    } = req.body;
 
     // ✅ build update dynamically (avoid undefined overwrite)
     const update = {};
@@ -133,6 +181,10 @@ const updateCourse = async (req, res) => {
 
     if (courseType && ALLOWED_COURSE_TYPES.includes(courseType)) {
       update.courseType = String(courseType).toLowerCase();
+    }
+
+    if (classTestPolicy !== undefined) {
+      update.classTestPolicy = sanitizeClassTestPolicy(classTestPolicy);
     }
 
     if (archived !== undefined) {

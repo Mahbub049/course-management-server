@@ -33,6 +33,91 @@ const getGradeFromTotal = (total) => {
 
 const round2 = (x) => Math.round(x * 100) / 100;
 
+const roundPolicyTotal = (total) => {
+  return total % 1 === 0
+    ? total
+    : total % 1 <= 0.5
+      ? Math.floor(total) + 0.5
+      : Math.ceil(total);
+};
+
+const normalizeCtPolicy = (course) => {
+  const raw = course?.classTestPolicy || {};
+
+  return {
+    mode: raw.mode || 'best_n_average_scaled',
+    bestCount:
+      Number(raw.bestCount) > 0
+        ? Number(raw.bestCount)
+        : raw.mode === 'best_one_scaled'
+          ? 1
+          : 2,
+    totalWeight:
+      Number(raw.totalWeight) >= 0 ? Number(raw.totalWeight) : 15,
+    manualSelectedAssessmentIds: Array.isArray(raw.manualSelectedAssessmentIds)
+      ? raw.manualSelectedAssessmentIds.map(String)
+      : [],
+  };
+};
+
+const isCtAssessment = (nameRaw) => {
+  const n = String(nameRaw || '').toLowerCase().trim();
+
+  if (n.includes('mid') || n.includes('final') || n.includes('att')) return false;
+  if (n.includes('assign') || n.includes('pres')) return false;
+
+  const compact = n.replace(/[\s\-_]+/g, '');
+
+  if (compact.startsWith('ct')) return true;
+  if (compact.includes('classtest')) return true;
+  if (n.includes('class test')) return true;
+  if (n.includes('quiz')) return true;
+  if (n.includes('test')) return true;
+
+  return false;
+};
+
+const computeCtContributionByPolicy = (course, entries) => {
+  const policy = normalizeCtPolicy(course);
+  const totalWeight = Number(policy.totalWeight || 15);
+
+  if (!entries.length || totalWeight <= 0) return 0;
+
+  if (policy.mode === 'manual_average_scaled') {
+    const selected = entries.filter((e) =>
+      policy.manualSelectedAssessmentIds.includes(e.id)
+    );
+
+    if (!selected.length) return 0;
+
+    const avg =
+      selected.reduce((sum, item) => sum + item.pct, 0) / selected.length;
+
+    return avg * totalWeight;
+  }
+
+  const sorted = [...entries].sort((a, b) => b.pct - a.pct);
+
+  if (policy.mode === 'best_one_scaled') {
+    return (sorted[0]?.pct || 0) * totalWeight;
+  }
+
+  const count = Math.max(1, Number(policy.bestCount || 2));
+  const chosen = sorted.slice(0, count);
+
+  if (!chosen.length) return 0;
+
+  if (policy.mode === 'best_n_individual_scaled') {
+    const eachWeight = totalWeight / chosen.length;
+    return chosen.reduce((sum, item) => sum + item.pct * eachWeight, 0);
+  }
+
+  const avg =
+    chosen.reduce((sum, item) => sum + item.pct, 0) / chosen.length;
+
+  return avg * totalWeight;
+};
+
 // ---------- Core computation (same logic as teacher TabMarks) ----------
 
 const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
@@ -118,6 +203,7 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
       maxPossible: round2(maxPossible),
       grade,
       totalObtained: round2(currentTotal),
+      ctMain: 0,
       aPlusNeeded: round2(neededForAPlus),
       aPlusInfo: {
         needed: round2(neededForAPlus),
@@ -127,8 +213,8 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
   }
 
   // ===== THEORY COURSES =====
-  const ctPctsNow = [];
-  const ctPctsFull = [];
+  const ctEntriesNow = [];
+  const ctEntriesFull = [];
   let midPctNow = 0;
   let midPctFull = 0;
   let finalPctNow = 0;
@@ -149,9 +235,16 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
     const pctNow = getPct(id, full);
     const hasThis = full > 0;
 
-    if (name.startsWith('ct') || name.includes('class test')) {
-      ctPctsNow.push(pctNow);
-      if (hasThis) ctPctsFull.push(1);
+    if (isCtAssessment(a.name)) {
+      ctEntriesNow.push({
+        id: id,
+        pct: pctNow,
+      });
+
+      ctEntriesFull.push({
+        id: id,
+        pct: hasThis ? 1 : 0,
+      });
     } else if (name.includes('mid')) {
       midPctNow = pctNow;
       midPctFull = hasThis ? 1 : 0;
@@ -172,18 +265,21 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
     }
   });
 
-  const bestTwoAvg = (arr) => {
-    if (arr.length === 0) return 0;
-    if (arr.length === 1) return arr[0];
-    const sorted = [...arr].sort((a, b) => b - a);
-    return (sorted[0] + sorted[1]) / 2;
-  };
+  // const bestTwoAvg = (arr) => {
+  //   if (arr.length === 0) return 0;
+  //   if (arr.length === 1) return arr[0];
+  //   const sorted = [...arr].sort((a, b) => b - a);
+  //   return (sorted[0] + sorted[1]) / 2;
+  // };
 
-  const ctAvgNow = bestTwoAvg(ctPctsNow);
-  const ctAvgFull = bestTwoAvg(ctPctsFull);
+  // const ctAvgNow = bestTwoAvg(ctPctsNow);
+  // const ctAvgFull = bestTwoAvg(ctPctsFull);
 
-  const ctNow = ctAvgNow * 15;
-  const ctFull = ctAvgFull * 15;
+  // const ctNow = ctAvgNow * 15;
+  // const ctFull = ctAvgFull * 15;
+
+  const ctNow = computeCtContributionByPolicy(course, ctEntriesNow);
+  const ctFull = computeCtContributionByPolicy(course, ctEntriesFull);
 
   const midNow = midPctNow * 30;
   const midFull = midPctFull * 30;
@@ -221,6 +317,7 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
     maxPossible: round2(maxPossible),
     grade,
     totalObtained: round2(currentTotal),
+    ctMain: roundPolicyTotal(ctNow),
     aPlusNeeded: round2(neededForAPlus),
     aPlusInfo: {
       needed: round2(neededForAPlus),
@@ -309,6 +406,7 @@ const getStudentCourses = async (req, res) => {
 
         summary = {
           total: computed.currentTotal,
+          ctMain: computed.ctMain,
           grade: computed.grade,
           maxPossible: computed.maxPossible,
         };
@@ -413,6 +511,7 @@ const getStudentCourseDetails = async (req, res) => {
       },
       assessments: assessmentsResponse,
       totalObtained: summary.totalObtained,
+      ctMain: summary.ctMain,
       grade: summary.grade,
       aPlusInfo: summary.aPlusInfo,
       aPlusNeeded: summary.aPlusNeeded,
