@@ -22,11 +22,12 @@ const calcPercentage = (total, attended) => {
 
 const calcMarks = (percentage) => {
   const p = Number(percentage || 0);
-  if (p >= 90) return 5;
-  if (p >= 80) return 4;
-  if (p >= 70) return 3;
-  if (p >= 60) return 2;
-  if (p >= 50) return 1;
+
+  if (p >= 91 && p <= 100) return 5;
+  if (p >= 86 && p < 91) return 4;
+  if (p >= 81 && p < 86) return 3;
+  if (p >= 76 && p < 81) return 2;
+  if (p >= 70 && p < 76) return 1;
   return 0;
 };
 
