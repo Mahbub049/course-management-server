@@ -6,8 +6,17 @@ const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
 };
 
+function round2(num) {
+  return Math.round(Number(num || 0) * 100) / 100;
+}
+
+function sumSubMarks(subMarks = []) {
+  return round2(
+    (subMarks || []).reduce((sum, item) => sum + Number(item?.obtainedMarks || 0), 0)
+  );
+}
+
 // GET /api/courses/:courseId/marks
-// Returns all marks for that course
 const getMarksForCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -18,7 +27,7 @@ const getMarksForCourse = async (req, res) => {
     }
 
     const marks = await Mark.find({ course: courseId }).select(
-      'student assessment obtainedMarks'
+      'student assessment obtainedMarks subMarks'
     );
 
     res.json(marks);
@@ -29,7 +38,17 @@ const getMarksForCourse = async (req, res) => {
 };
 
 // POST /api/courses/:courseId/marks
-// body: { marks: [{ studentId, assessmentId, obtainedMarks }] }
+// body:
+// {
+//   marks: [
+//     {
+//       studentId,
+//       assessmentId,
+//       obtainedMarks,
+//       subMarks?: [{ key, obtainedMarks }]
+//     }
+//   ]
+// }
 const saveMarksForCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
@@ -44,22 +63,52 @@ const saveMarksForCourse = async (req, res) => {
       return res.status(404).json({ message: 'Course not found' });
     }
 
-    // Accept both shapes:
-    //  - { studentId, assessmentId, obtainedMarks }
-    //  - { student,   assessment,   obtainedMarks }
+    const assessmentIds = marks
+      .map((m) => m.assessmentId || m.assessment)
+      .filter(Boolean);
+
+    const assessments = await Assessment.find({
+      _id: { $in: assessmentIds },
+      course: courseId,
+    });
+
+    const assessmentMap = new Map(
+      assessments.map((a) => [String(a._id), a])
+    );
+
     const cleaned = marks
-      .map((m) => ({
-        studentId: m.studentId || m.student,
-        assessmentId: m.assessmentId || m.assessment,
-        obtainedMarks: m.obtainedMarks,
-      }))
-      .filter(
-        (m) =>
-          m.studentId &&
-          m.assessmentId &&
-          m.obtainedMarks != null &&
-          !Number.isNaN(Number(m.obtainedMarks))
-      );
+      .map((m) => {
+        const studentId = m.studentId || m.student;
+        const assessmentId = m.assessmentId || m.assessment;
+        const assessment = assessmentMap.get(String(assessmentId));
+
+        if (!studentId || !assessmentId || !assessment) return null;
+
+        const rawSubMarks = Array.isArray(m.subMarks) ? m.subMarks : [];
+        const subMarks = rawSubMarks
+          .map((s) => ({
+            key: String(s?.key || '').trim(),
+            obtainedMarks: Number(s?.obtainedMarks || 0),
+          }))
+          .filter((s) => s.key);
+
+        let obtainedMarks =
+          m.obtainedMarks != null && !Number.isNaN(Number(m.obtainedMarks))
+            ? Number(m.obtainedMarks)
+            : 0;
+
+        if (assessment.structureType === 'lab_final') {
+          obtainedMarks = sumSubMarks(subMarks);
+        }
+
+        return {
+          studentId,
+          assessmentId,
+          obtainedMarks: round2(obtainedMarks),
+          subMarks,
+        };
+      })
+      .filter(Boolean);
 
     const bulkOps = cleaned.map((m) => ({
       updateOne: {
@@ -73,7 +122,8 @@ const saveMarksForCourse = async (req, res) => {
             course: courseId,
             student: m.studentId,
             assessment: m.assessmentId,
-            obtainedMarks: Number(m.obtainedMarks),
+            obtainedMarks: m.obtainedMarks,
+            subMarks: m.subMarks,
           },
         },
         upsert: true,

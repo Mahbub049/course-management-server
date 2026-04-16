@@ -1,11 +1,9 @@
-// server/src/controllers/studentController.js
-
 const Enrollment = require('../models/Enrollment');
 const Course = require('../models/Course');
 const Assessment = require('../models/Assessment');
 const Mark = require('../models/Mark');
 
-// ---------- Helpers for course type / weighting ----------
+// ---------- Helpers ----------
 
 const getCourseType = (course) => {
   return (course?.courseType || 'theory').toLowerCase();
@@ -20,8 +18,9 @@ const GRADE_THRESHOLDS = [
   { grade: 'B+', min: 65 },
   { grade: 'B', min: 60 },
   { grade: 'B-', min: 55 },
-  { grade: 'C', min: 50 },
-  { grade: 'D', min: 45 },
+  { grade: 'C+', min: 50 },
+  { grade: 'C', min: 45 },
+  { grade: 'D', min: 40 },
 ];
 
 const getGradeFromTotal = (total) => {
@@ -31,7 +30,7 @@ const getGradeFromTotal = (total) => {
   return 'F';
 };
 
-const round2 = (x) => Math.round(x * 100) / 100;
+const round2 = (x) => Math.round(Number(x || 0) * 100) / 100;
 
 const roundPolicyTotal = (total) => {
   return total % 1 === 0
@@ -118,77 +117,91 @@ const computeCtContributionByPolicy = (course, entries) => {
   return avg * totalWeight;
 };
 
-// ---------- Core computation (same logic as teacher TabMarks) ----------
+// ---------- Core computation ----------
 
 const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
   const courseType = getCourseType(course);
 
   const getPct = (assessmentId, fullMarks) => {
     const mark = marksByAssessment[assessmentId];
-    if (mark == null || Number.isNaN(mark) || fullMarks <= 0) return 0;
-    return mark / fullMarks;
+    if (mark == null || Number.isNaN(Number(mark)) || Number(fullMarks) <= 0) {
+      return 0;
+    }
+    return Number(mark) / Number(fullMarks);
   };
 
   // ===== LAB COURSES =====
   if (courseType === 'lab') {
-    const labPctsNow = [];
-    const labPctsFull = [];
-
-    let midPctNow = 0;
-    let midPctFull = 0;
-    let finalPctNow = 0;
-    let finalPctFull = 0;
-    let attPctNow = 0;
-    let attPctFull = 0;
-
-    assessments.forEach((a) => {
-      const id = a._id.toString();
+    const regularLabAssessments = assessments.filter((a) => {
       const name = lower(a.name);
-      const full = a.fullMarks || 0;
-      const pctNow = getPct(id, full);
-      const hasThis = full > 0;
-
-      if (
+      return (
+        a?.structureType !== 'lab_final' &&
         !name.includes('mid') &&
         !name.includes('final') &&
         !name.includes('att') &&
         !name.includes('attendance')
-      ) {
-        labPctsNow.push(pctNow);
-        if (hasThis) labPctsFull.push(1);
-      } else if (name.includes('mid')) {
-        midPctNow = pctNow;
-        midPctFull = hasThis ? 1 : 0;
-      } else if (name.includes('final')) {
-        finalPctNow = pctNow;
-        finalPctFull = hasThis ? 1 : 0;
-      } else if (name.includes('att') || name.includes('attendance')) {
-        attPctNow = pctNow;
-        attPctFull = hasThis ? 1 : 0;
-      }
+      );
     });
 
+    const midAssessment = assessments.find((a) =>
+      lower(a.name).includes('mid')
+    );
+
+    const advancedLabFinal = assessments.find(
+      (a) => a?.structureType === 'lab_final'
+    );
+
+    const regularFinal = assessments.find(
+      (a) =>
+        a?.structureType !== 'lab_final' &&
+        lower(a.name).includes('final')
+    );
+
+    const finalAssessment = advancedLabFinal || regularFinal;
+
+    const attendanceAssessment = assessments.find((a) => {
+      const name = lower(a.name);
+      return name.includes('att') || name.includes('attendance');
+    });
+
+    const regularLabPctsNow = regularLabAssessments.map((a) =>
+      getPct(a._id.toString(), a.fullMarks)
+    );
+
+    const regularLabPctsFull = regularLabAssessments.map(() => 1);
+
     const avgNow =
-      labPctsNow.length > 0
-        ? labPctsNow.reduce((s, p) => s + p, 0) / labPctsNow.length
+      regularLabPctsNow.length > 0
+        ? regularLabPctsNow.reduce((s, p) => s + p, 0) /
+          regularLabPctsNow.length
         : 0;
 
     const avgFull =
-      labPctsFull.length > 0
-        ? labPctsFull.reduce((s, p) => s + p, 0) / labPctsFull.length
+      regularLabPctsFull.length > 0
+        ? regularLabPctsFull.reduce((s, p) => s + p, 0) /
+          regularLabPctsFull.length
         : 0;
 
     const labNow = avgNow * 25;
     const labFull = avgFull * 25;
 
-    const midNow = midPctNow * 30;
-    const midFull = midPctFull * 30;
+    const midNow = midAssessment
+      ? getPct(midAssessment._id.toString(), midAssessment.fullMarks) * 30
+      : 0;
+    const midFull = midAssessment ? 30 : 0;
 
-    const finalNow = finalPctNow * 40;
-    const finalFull = finalPctFull * 40;
+    const finalNow = finalAssessment
+      ? getPct(finalAssessment._id.toString(), finalAssessment.fullMarks) * 40
+      : 0;
+    const finalFull = finalAssessment ? 40 : 0;
 
-    const attNow = attPctNow * 5;
-    const attFull = attPctFull * 5;
+    const attNow = attendanceAssessment
+      ? getPct(
+          attendanceAssessment._id.toString(),
+          attendanceAssessment.fullMarks
+        ) * 5
+      : 0;
+    const attFull = attendanceAssessment ? 5 : 0;
 
     const currentTotal = labNow + midNow + finalNow + attNow;
     const maxPossible = labFull + midFull + finalFull + attFull;
@@ -199,11 +212,12 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
       currentTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - currentTotal);
 
     return {
-      currentTotal: round2(currentTotal),
+      currentTotal: round2(roundPolicyTotal(currentTotal)),
       maxPossible: round2(maxPossible),
       grade,
-      totalObtained: round2(currentTotal),
-      ctMain: 0,
+      totalObtained: round2(roundPolicyTotal(currentTotal)),
+      ctMain: round2(roundPolicyTotal(labNow)),
+      labMain: round2(roundPolicyTotal(labNow)),
       aPlusNeeded: round2(neededForAPlus),
       aPlusInfo: {
         needed: round2(neededForAPlus),
@@ -215,36 +229,35 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
   // ===== THEORY COURSES =====
   const ctEntriesNow = [];
   const ctEntriesFull = [];
+
   let midPctNow = 0;
   let midPctFull = 0;
+
   let finalPctNow = 0;
   let finalPctFull = 0;
+
   let attPctNow = 0;
   let attPctFull = 0;
+
   let assignPctNow = 0;
   let assignPctFull = 0;
+
   let presPctNow = 0;
   let presPctFull = 0;
+
   let hasAssignment = false;
   let hasPresentation = false;
 
   assessments.forEach((a) => {
     const id = a._id.toString();
     const name = lower(a.name);
-    const full = a.fullMarks || 0;
+    const full = Number(a.fullMarks || 0);
     const pctNow = getPct(id, full);
     const hasThis = full > 0;
 
     if (isCtAssessment(a.name)) {
-      ctEntriesNow.push({
-        id: id,
-        pct: pctNow,
-      });
-
-      ctEntriesFull.push({
-        id: id,
-        pct: hasThis ? 1 : 0,
-      });
+      ctEntriesNow.push({ id, pct: pctNow });
+      ctEntriesFull.push({ id, pct: hasThis ? 1 : 0 });
     } else if (name.includes('mid')) {
       midPctNow = pctNow;
       midPctFull = hasThis ? 1 : 0;
@@ -264,19 +277,6 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
       presPctFull = hasThis ? 1 : 0;
     }
   });
-
-  // const bestTwoAvg = (arr) => {
-  //   if (arr.length === 0) return 0;
-  //   if (arr.length === 1) return arr[0];
-  //   const sorted = [...arr].sort((a, b) => b - a);
-  //   return (sorted[0] + sorted[1]) / 2;
-  // };
-
-  // const ctAvgNow = bestTwoAvg(ctPctsNow);
-  // const ctAvgFull = bestTwoAvg(ctPctsFull);
-
-  // const ctNow = ctAvgNow * 15;
-  // const ctFull = ctAvgFull * 15;
 
   const ctNow = computeCtContributionByPolicy(course, ctEntriesNow);
   const ctFull = computeCtContributionByPolicy(course, ctEntriesFull);
@@ -313,11 +313,11 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
     currentTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - currentTotal);
 
   return {
-    currentTotal: round2(currentTotal),
+    currentTotal: round2(roundPolicyTotal(currentTotal)),
     maxPossible: round2(maxPossible),
     grade,
-    totalObtained: round2(currentTotal),
-    ctMain: roundPolicyTotal(ctNow),
+    totalObtained: round2(roundPolicyTotal(currentTotal)),
+    ctMain: round2(roundPolicyTotal(ctNow)),
     aPlusNeeded: round2(neededForAPlus),
     aPlusInfo: {
       needed: round2(neededForAPlus),
@@ -340,9 +340,9 @@ const getStudentCourses = async (req, res) => {
     const courseDocs = enrollments
       .map((e) => e.course)
       .filter((course) => course && course.archived !== true);
+
     const courseIds = courseDocs.map((c) => c._id);
 
-    // Only published assessments should be visible to students
     const [assessments, marks] = await Promise.all([
       Assessment.find({
         course: { $in: courseIds },
@@ -358,7 +358,6 @@ const getStudentCourses = async (req, res) => {
       assessments.map((a) => a._id.toString())
     );
 
-    // Group assessments by course
     const assessmentsByCourse = {};
     for (const a of assessments) {
       const cid = a.course.toString();
@@ -366,9 +365,9 @@ const getStudentCourses = async (req, res) => {
       assessmentsByCourse[cid].push(a);
     }
 
-    // Group only marks that belong to published assessments
     const marksByCourse = {};
     const marksByAssessmentByCourse = {};
+
     for (const m of marks) {
       const assessmentId = m.assessment.toString();
       if (!publishedAssessmentIds.has(assessmentId)) continue;
@@ -379,7 +378,7 @@ const getStudentCourses = async (req, res) => {
       marksByCourse[cid].push(m);
 
       if (!marksByAssessmentByCourse[cid]) marksByAssessmentByCourse[cid] = {};
-      marksByAssessmentByCourse[cid][assessmentId] = m.obtainedMarks;
+      marksByAssessmentByCourse[cid][assessmentId] = Number(m.obtainedMarks || 0);
     }
 
     const courses = courseDocs.map((course) => {
@@ -407,6 +406,7 @@ const getStudentCourses = async (req, res) => {
         summary = {
           total: computed.currentTotal,
           ctMain: computed.ctMain,
+          labMain: computed.labMain || 0,
           grade: computed.grade,
           maxPossible: computed.maxPossible,
         };
@@ -457,7 +457,6 @@ const getStudentCourseDetails = async (req, res) => {
       });
     }
 
-    // Only published assessments
     const assessments = await Assessment.find({
       course: courseId,
       isPublished: true,
@@ -468,7 +467,6 @@ const getStudentCourseDetails = async (req, res) => {
 
     const publishedAssessmentIds = assessments.map((a) => a._id);
 
-    // Only marks for published assessments
     const marks = await Mark.find({
       course: courseId,
       student: studentId,
@@ -476,20 +474,30 @@ const getStudentCourseDetails = async (req, res) => {
     });
 
     const marksByAssessment = {};
+    const markDocsByAssessment = {};
+
     marks.forEach((m) => {
-      marksByAssessment[m.assessment.toString()] = m.obtainedMarks;
+      const aid = m.assessment.toString();
+      marksByAssessment[aid] = Number(m.obtainedMarks || 0);
+      markDocsByAssessment[aid] = m;
     });
 
     const assessmentsResponse = assessments.map((a) => {
-      const obtained = marksByAssessment[a._id.toString()] ?? null;
+      const aid = a._id.toString();
+      const markDoc = markDocsByAssessment[aid];
+      const obtained = marksByAssessment[aid] ?? null;
+
       return {
-        id: a._id.toString(),
-        _id: a._id.toString(),
+        id: aid,
+        _id: aid,
         name: a.name,
         fullMarks: a.fullMarks,
+        structureType: a.structureType || 'regular',
+        labFinalConfig: a.labFinalConfig || null,
         isPublished: a.isPublished,
         publishedAt: a.publishedAt,
         obtainedMarks: obtained,
+        subMarks: Array.isArray(markDoc?.subMarks) ? markDoc.subMarks : [],
       };
     });
 
@@ -512,6 +520,7 @@ const getStudentCourseDetails = async (req, res) => {
       assessments: assessmentsResponse,
       totalObtained: summary.totalObtained,
       ctMain: summary.ctMain,
+      labMain: summary.labMain || 0,
       grade: summary.grade,
       aPlusInfo: summary.aPlusInfo,
       aPlusNeeded: summary.aPlusNeeded,
