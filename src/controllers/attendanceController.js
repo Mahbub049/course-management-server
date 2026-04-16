@@ -447,6 +447,53 @@ const updateAttendanceByDay = async (req, res) => {
   }
 };
 
+// -------------------- DELETE (day + period) --------------------
+// DELETE /api/attendance/day?courseId=...&date=YYYY-MM-DD&period=1
+const deleteAttendanceByDay = async (req, res) => {
+  try {
+    const teacherId = req.user?.userId || req.user?.id;
+    if (!teacherId) return res.status(401).json({ message: "Unauthorized" });
+
+    const { courseId, date, period } = req.query;
+
+    if (!courseId || !date || !period) {
+      return res
+        .status(400)
+        .json({ message: "courseId, date and period are required" });
+    }
+
+    const course = await Course.findOne({ _id: courseId, createdBy: teacherId });
+    if (!course) {
+      return res.status(404).json({ message: "Course not found for this teacher" });
+    }
+
+    const { start, end } = dayRange(date);
+    const p = Number(period);
+
+    const deleted = await Attendance.findOneAndDelete({
+      teacher: teacherId,
+      course: courseId,
+      date: { $gte: start, $lte: end },
+      period: p,
+    });
+
+    if (!deleted) {
+      return res
+        .status(404)
+        .json({ message: `No attendance found for Period ${p} on this date` });
+    }
+
+    return res.json({
+      message: `Attendance deleted successfully for Period ${p}`,
+      date,
+      period: p,
+    });
+  } catch (err) {
+    console.error("deleteAttendanceByDay error:", err);
+    return res.status(500).json({ message: "Failed to delete attendance" });
+  }
+};
+
 module.exports = {
   createAttendance,
   createAttendanceBulk,
@@ -454,4 +501,5 @@ module.exports = {
   getStudentAttendanceSheet,
   getAttendanceByDay,
   updateAttendanceByDay,
+  deleteAttendanceByDay,
 };

@@ -8,6 +8,7 @@ const {
   getStudentAttendanceSheet,
   getAttendanceByDay,
   updateAttendanceByDay,
+  deleteAttendanceByDay,
 } = require("../controllers/attendanceController");
 
 const {
@@ -30,5 +31,7 @@ router.get("/day", authMiddleware, requireTeacher, getAttendanceByDay);
 
 // Teacher: update existing attendance of a day (period-wise)
 router.put("/day", authMiddleware, requireTeacher, updateAttendanceByDay);
+
+router.delete("/day", authMiddleware, requireTeacher, deleteAttendanceByDay);
 
 module.exports = router;

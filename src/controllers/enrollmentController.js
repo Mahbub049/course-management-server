@@ -371,6 +371,59 @@ exports.resetStudentPassword = async (req, res) => {
 };
 
 // ===============================================================
+// 5B️⃣ RESET ALL STUDENT PASSWORDS (Regenerate All)
+// ===============================================================
+exports.resetAllStudentPasswords = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const enrollments = await Enrollment.find({ course: courseId }).populate("student");
+
+    if (!enrollments.length) {
+      return res.status(404).json({ message: "No students found in this course." });
+    }
+
+    const updatedStudents = [];
+
+    for (const enrollment of enrollments) {
+      const student = enrollment.student;
+      if (!student) continue;
+
+      const newPassword = generateRandomPassword();
+
+      if (typeof student.setPassword === "function") {
+        await student.setPassword(newPassword);
+      } else {
+        student.password = newPassword;
+      }
+
+      await student.save();
+
+      enrollment.temporaryPassword = newPassword;
+      await enrollment.save();
+
+      updatedStudents.push({
+        enrollmentId: enrollment._id,
+        studentId: student._id,
+        roll: student.username,
+        name: student.name,
+        email: student.email || null,
+        temporaryPassword: newPassword,
+      });
+    }
+
+    return res.json({
+      message: "All student passwords regenerated successfully.",
+      totalUpdated: updatedStudents.length,
+      students: updatedStudents,
+    });
+  } catch (err) {
+    console.error("Reset All Passwords Error:", err);
+    return res.status(500).json({ message: "Failed to reset all student passwords." });
+  }
+};
+
+// ===============================================================
 // 6️⃣ EXPORT STUDENTS (Excel)
 // ===============================================================
 exports.exportCourseStudents = async (req, res) => {

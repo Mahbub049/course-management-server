@@ -17,8 +17,9 @@ const {
   bulkAddStudentsToCourse,
   getCourseStudents,
   removeStudentFromCourse,
-  removeAllStudentsFromCourse, // ✅ NEW
+  removeAllStudentsFromCourse,
   resetStudentPassword,
+  resetAllStudentPasswords,
   exportCourseStudents,
   sendPasswordsByEmail,
 } = require("../controllers/enrollmentController");
@@ -73,6 +74,7 @@ router.delete("/:courseId/students/:enrollmentId", ...teacherOnly, removeStudent
 
 router.post("/:courseId/students/:studentId/reset-password", ...teacherOnly, resetStudentPassword);
 
+router.post("/:courseId/students/reset-password-all", ...teacherOnly, resetAllStudentPasswords);
 // ===================================================
 // ✅ ASSESSMENTS
 // ===================================================
