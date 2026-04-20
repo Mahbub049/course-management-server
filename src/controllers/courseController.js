@@ -16,6 +16,24 @@ const ALLOWED_CT_POLICY_MODES = [
   'manual_average_scaled',
 ];
 
+const sanitizeProjectFeature = (raw = {}) => {
+  const mode = raw?.mode === "project" ? "project" : "lab_final";
+
+  const totalProjectMarksRaw = Number(raw?.totalProjectMarks);
+  const totalProjectMarks =
+    Number.isFinite(totalProjectMarksRaw) && totalProjectMarksRaw >= 0
+      ? totalProjectMarksRaw
+      : 40;
+
+  return {
+    mode,
+    totalProjectMarks,
+    allowStudentGroupCreation: raw?.allowStudentGroupCreation !== false,
+    allowTeacherGroupEditing: raw?.allowTeacherGroupEditing !== false,
+    visibleToStudents: raw?.visibleToStudents !== false,
+  };
+};
+
 const sanitizeClassTestPolicy = (raw = {}) => {
   const mode = ALLOWED_CT_POLICY_MODES.includes(raw?.mode)
     ? raw.mode
@@ -54,7 +72,7 @@ const sanitizeClassTestPolicy = (raw = {}) => {
 const createCourse = async (req, res) => {
   try {
     const teacherId = req.user.userId;
-    const { code, title, section, semester, year, courseType } = req.body;
+    const { code, title, section, semester, year, courseType, projectFeature } = req.body;
 
     if (!code || !title || !section || !semester || !year) {
       return res
@@ -74,6 +92,7 @@ const createCourse = async (req, res) => {
       year,
       courseType: normalizedType,
       createdBy: teacherId,
+      projectFeature: sanitizeProjectFeature(projectFeature),
     });
 
     await course.save();
@@ -169,6 +188,7 @@ const updateCourse = async (req, res) => {
       courseType,
       archived,
       classTestPolicy,
+      projectFeature,
     } = req.body;
 
     // ✅ build update dynamically (avoid undefined overwrite)
@@ -185,6 +205,10 @@ const updateCourse = async (req, res) => {
 
     if (classTestPolicy !== undefined) {
       update.classTestPolicy = sanitizeClassTestPolicy(classTestPolicy);
+    }
+
+    if (projectFeature !== undefined) {
+      update.projectFeature = sanitizeProjectFeature(projectFeature);
     }
 
     if (archived !== undefined) {

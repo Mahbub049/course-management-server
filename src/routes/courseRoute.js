@@ -40,6 +40,43 @@ const {
   getAttendanceSummaryFromSheet,
 } = require("../controllers/attendanceSummaryController");
 
+const {
+  getTeacherCourseMaterials,
+  createCourseMaterial,
+  updateCourseMaterial,
+  deleteCourseMaterial,
+} = require("../controllers/courseMaterialController");
+
+const {
+  getTeacherProjectGroups,
+  createTeacherProjectGroup,
+  updateTeacherProjectGroup,
+  deleteTeacherProjectGroup,
+} = require("../controllers/projectGroupController");
+
+const {
+  getTeacherProjectPhases,
+  createProjectPhase,
+  updateProjectPhase,
+  deleteProjectPhase,
+} = require("../controllers/projectPhaseController");
+
+const {
+  getTeacherProjectSubmissions,
+} = require("../controllers/projectSubmissionController");
+
+
+const {
+  getTeacherProjectEvaluations,
+  saveProjectEvaluation,
+} = require("../controllers/projectEvaluationController");
+
+const {
+  getTeacherProjectSyncState,
+  saveTeacherProjectSyncConfig,
+  runProjectFinalSync,
+} = require("../controllers/projectFinalSyncController");
+
 // ✅ Helper middleware chain (order matters!)
 const teacherOnly = [authMiddleware, requireTeacher];
 
@@ -100,4 +137,42 @@ router.get("/:courseId/attendance-summary/from-sheet", ...teacherOnly, getAttend
 
 router.post("/:courseId/assessments/:assessmentId/publish", ...teacherOnly, publishAssessment);
 
+
+// ===================================================
+// ✅ COURSE MATERIALS
+// ===================================================
+router.get("/:courseId/materials", ...teacherOnly, getTeacherCourseMaterials);
+router.post("/:courseId/materials", ...teacherOnly, createCourseMaterial);
+router.put("/materials/:materialId", ...teacherOnly, updateCourseMaterial);
+router.delete("/materials/:materialId", ...teacherOnly, deleteCourseMaterial);
+
+
+// ===================================================
+// ✅ PROJECT GROUPS (Teacher)
+// ===================================================
+router.get("/:courseId/project-groups", ...teacherOnly, getTeacherProjectGroups);
+router.post("/:courseId/project-groups", ...teacherOnly, createTeacherProjectGroup);
+router.put("/:courseId/project-groups/:groupId", ...teacherOnly, updateTeacherProjectGroup);
+router.delete("/:courseId/project-groups/:groupId", ...teacherOnly, deleteTeacherProjectGroup);
+
+
+// ===================================================
+// ✅ PROJECT PHASES (Teacher)
+// ===================================================
+router.get("/:courseId/project-phases", ...teacherOnly, getTeacherProjectPhases);
+router.post("/:courseId/project-phases", ...teacherOnly, createProjectPhase);
+router.put("/:courseId/project-phases/:phaseId", ...teacherOnly, updateProjectPhase);
+router.delete("/:courseId/project-phases/:phaseId", ...teacherOnly, deleteProjectPhase);
+
+router.get("/:courseId/project-submissions", ...teacherOnly, getTeacherProjectSubmissions);
+
+
+router.get("/:courseId/project-evaluations", ...teacherOnly, getTeacherProjectEvaluations);
+router.post("/:courseId/project-evaluations/:phaseId", ...teacherOnly, saveProjectEvaluation);
+
+
+router.get("/:courseId/project-sync", ...teacherOnly, getTeacherProjectSyncState);
+router.put("/:courseId/project-sync", ...teacherOnly, saveTeacherProjectSyncConfig);
+router.post("/:courseId/project-sync/run", ...teacherOnly, runProjectFinalSync);
 module.exports = router;
+

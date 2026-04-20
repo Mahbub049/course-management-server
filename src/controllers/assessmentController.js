@@ -237,6 +237,7 @@ const createAssessment = async (req, res) => {
       order,
       structureType = 'regular',
       labFinalConfig = null,
+      submissionConfig = null,
     } = req.body;
 
     if (!name || fullMarks == null) {
@@ -254,6 +255,21 @@ const createAssessment = async (req, res) => {
 
     const newFlags = classifyByName(name);
     const isAdvancedLabFinal = structureType === 'lab_final';
+    const isLabSubmission = structureType === 'lab_submission';
+
+
+    let finalSubmissionConfig = null;
+    if (isLabSubmission) {
+      finalSubmissionConfig = {
+        instructions: String(submissionConfig?.instructions || '').trim(),
+        dueDate: submissionConfig?.dueDate || null,
+        allowedExtensions: Array.isArray(submissionConfig?.allowedExtensions)
+          ? submissionConfig.allowedExtensions.map((item) => String(item).replace(/^\./, '').toLowerCase())
+          : ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx'],
+        maxFileSizeMB: Number(submissionConfig?.maxFileSizeMB || 10),
+        allowResubmission: submissionConfig?.allowResubmission !== false,
+      };
+    }
 
     if (isAdvancedLabFinal) {
       if ((course?.courseType || '').toLowerCase() !== 'lab') {
@@ -349,6 +365,7 @@ const createAssessment = async (req, res) => {
       order: order ?? 0,
       structureType,
       labFinalConfig: isAdvancedLabFinal ? labFinalConfig : null,
+      submissionConfig: isLabSubmission ? finalSubmissionConfig : null,
     });
 
     return res.status(201).json(assessment);
@@ -394,6 +411,7 @@ const updateAssessment = async (req, res) => {
       order,
       structureType,
       labFinalConfig,
+      submissionConfig,
     } = req.body;
 
     const assessment = await Assessment.findById(assessmentId).populate('course');
@@ -420,6 +438,21 @@ const updateAssessment = async (req, res) => {
 
     const newFlags = classifyByName(finalName);
     const isAdvancedLabFinal = finalStructureType === 'lab_final';
+    const isLabSubmission = finalStructureType === 'lab_submission';
+
+
+    let finalSubmissionConfig = null;
+    if (isLabSubmission) {
+      finalSubmissionConfig = {
+        instructions: String(submissionConfig?.instructions || '').trim(),
+        dueDate: submissionConfig?.dueDate || null,
+        allowedExtensions: Array.isArray(submissionConfig?.allowedExtensions)
+          ? submissionConfig.allowedExtensions.map((item) => String(item).replace(/^\./, '').toLowerCase())
+          : ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx'],
+        maxFileSizeMB: Number(submissionConfig?.maxFileSizeMB || 10),
+        allowResubmission: submissionConfig?.allowResubmission !== false,
+      };
+    }
 
     if (isAdvancedLabFinal) {
       if (((assessment.course?.courseType || '').toLowerCase() !== 'lab')) {
@@ -456,9 +489,23 @@ const updateAssessment = async (req, res) => {
 
       assessment.structureType = 'lab_final';
       assessment.labFinalConfig = configToValidate;
+      assessment.submissionConfig = null;
+    } else if (isLabSubmission) {
+      assessment.structureType = 'lab_submission';
+      assessment.labFinalConfig = null;
+      assessment.submissionConfig = {
+        instructions: String(submissionConfig?.instructions || assessment.submissionConfig?.instructions || '').trim(),
+        dueDate: submissionConfig?.dueDate || assessment.submissionConfig?.dueDate || null,
+        allowedExtensions: Array.isArray(submissionConfig?.allowedExtensions)
+          ? submissionConfig.allowedExtensions.map((item) => String(item).replace(/^\./, '').toLowerCase())
+          : (assessment.submissionConfig?.allowedExtensions || ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx']),
+        maxFileSizeMB: Number(submissionConfig?.maxFileSizeMB || assessment.submissionConfig?.maxFileSizeMB || 10),
+        allowResubmission: submissionConfig?.allowResubmission !== false,
+      };
     } else {
       assessment.structureType = 'regular';
       assessment.labFinalConfig = null;
+      assessment.submissionConfig = null;
     }
 
     if (newFlags.isMid) {

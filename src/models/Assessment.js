@@ -96,7 +96,6 @@ const labFinalConfigSchema = new mongoose.Schema(
       default: 40,
       min: 0,
     },
-
     projectMarks: {
       type: Number,
       default: 0,
@@ -107,15 +106,65 @@ const labFinalConfigSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
-
     projectComponents: {
       type: [projectComponentSchema],
       default: [],
     },
-
     examQuestions: {
       type: [examQuestionSchema],
       default: [],
+    },
+  },
+  { _id: false }
+);
+
+const submissionConfigSchema = new mongoose.Schema(
+  {
+    instructions: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    dueDate: {
+      type: Date,
+      default: null,
+    },
+    allowedExtensions: {
+      type: [String],
+      default: ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx'],
+    },
+    maxFileSizeMB: {
+      type: Number,
+      default: 10,
+      min: 1,
+    },
+    allowResubmission: {
+      type: Boolean,
+      default: true,
+    },
+
+    isVisibleToStudents: {
+      type: Boolean,
+      default: false,
+    },
+    visibleAt: {
+      type: Date,
+      default: null,
+    },
+
+    submissionsOpen: {
+      type: Boolean,
+      default: true,
+    },
+    closedAt: {
+      type: Date,
+      default: null,
+    },
+
+    linkedMarkAssessment: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Assessment',
+      default: null,
     },
   },
   { _id: false }
@@ -148,12 +197,17 @@ const assessmentSchema = new mongoose.Schema(
 
     structureType: {
       type: String,
-      enum: ['regular', 'lab_final'],
+      enum: ['regular', 'lab_final', 'lab_submission'],
       default: 'regular',
     },
 
     labFinalConfig: {
       type: labFinalConfigSchema,
+      default: null,
+    },
+
+    submissionConfig: {
+      type: submissionConfigSchema,
       default: null,
     },
 

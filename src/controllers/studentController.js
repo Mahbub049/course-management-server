@@ -2,6 +2,8 @@ const Enrollment = require('../models/Enrollment');
 const Course = require('../models/Course');
 const Assessment = require('../models/Assessment');
 const Mark = require('../models/Mark');
+const CourseMaterial = require('../models/CourseMaterial');
+const LabSubmission = require('../models/LabSubmission');
 
 // ---------- Helpers ----------
 
@@ -173,13 +175,13 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
     const avgNow =
       regularLabPctsNow.length > 0
         ? regularLabPctsNow.reduce((s, p) => s + p, 0) /
-          regularLabPctsNow.length
+        regularLabPctsNow.length
         : 0;
 
     const avgFull =
       regularLabPctsFull.length > 0
         ? regularLabPctsFull.reduce((s, p) => s + p, 0) /
-          regularLabPctsFull.length
+        regularLabPctsFull.length
         : 0;
 
     const labNow = avgNow * 25;
@@ -197,9 +199,9 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
 
     const attNow = attendanceAssessment
       ? getPct(
-          attendanceAssessment._id.toString(),
-          attendanceAssessment.fullMarks
-        ) * 5
+        attendanceAssessment._id.toString(),
+        attendanceAssessment.fullMarks
+      ) * 5
       : 0;
     const attFull = attendanceAssessment ? 5 : 0;
 
@@ -343,15 +345,21 @@ const getStudentCourses = async (req, res) => {
 
     const courseIds = courseDocs.map((c) => c._id);
 
-    const [assessments, marks] = await Promise.all([
+    const [assessments, marks, pendingSubmissionAssessments] = await Promise.all([
       Assessment.find({
         course: { $in: courseIds },
         isPublished: true,
+        structureType: { $ne: 'lab_submission' },
       }).sort({ order: 1, createdAt: 1 }),
       Mark.find({
         student: studentId,
         course: { $in: courseIds },
       }),
+      Assessment.find({
+        course: { $in: courseIds },
+        isPublished: true,
+        structureType: 'lab_submission',
+      }).sort({ createdAt: -1, order: 1 }),
     ]);
 
     const publishedAssessmentIds = new Set(
@@ -364,6 +372,13 @@ const getStudentCourses = async (req, res) => {
       if (!assessmentsByCourse[cid]) assessmentsByCourse[cid] = [];
       assessmentsByCourse[cid].push(a);
     }
+
+    const submissionAssessmentsByCourse = {};
+    pendingSubmissionAssessments.forEach((a) => {
+      const cid = a.course.toString();
+      if (!submissionAssessmentsByCourse[cid]) submissionAssessmentsByCourse[cid] = [];
+      submissionAssessmentsByCourse[cid].push(a);
+    });
 
     const marksByCourse = {};
     const marksByAssessmentByCourse = {};
@@ -380,6 +395,12 @@ const getStudentCourses = async (req, res) => {
       if (!marksByAssessmentByCourse[cid]) marksByAssessmentByCourse[cid] = {};
       marksByAssessmentByCourse[cid][assessmentId] = Number(m.obtainedMarks || 0);
     }
+
+    const submissionDocs = await LabSubmission.find({
+      student: studentId,
+      assessment: { $in: pendingSubmissionAssessments.map((a) => a._id) },
+    });
+    const submissionMap = Object.fromEntries(submissionDocs.map((s) => [String(s.assessment), s]));
 
     const courses = courseDocs.map((course) => {
       const cid = course._id.toString();
@@ -412,6 +433,18 @@ const getStudentCourses = async (req, res) => {
         };
       }
 
+      const submissionAssessments = (submissionAssessmentsByCourse[cid] || []).map((a) => {
+        const submission = submissionMap[a._id.toString()];
+        return {
+          id: a._id.toString(),
+          name: a.name,
+          dueDate: a.submissionConfig?.dueDate || null,
+          maxFileSizeMB: Number(a.submissionConfig?.maxFileSizeMB || 10),
+          status: submission ? submission.status : 'not_submitted',
+          submittedAt: submission?.submittedAt || null,
+        };
+      });
+
       return {
         id: cid,
         code: course.code,
@@ -422,6 +455,7 @@ const getStudentCourses = async (req, res) => {
         courseType: course.courseType,
         summaryStatus,
         summary,
+        pendingSubmissionAssessments: submissionAssessments,
       };
     });
 
@@ -460,6 +494,7 @@ const getStudentCourseDetails = async (req, res) => {
     const assessments = await Assessment.find({
       course: courseId,
       isPublished: true,
+      structureType: { $ne: 'lab_submission' },
     }).sort({
       order: 1,
       createdAt: 1,
@@ -516,6 +551,16 @@ const getStudentCourseDetails = async (req, res) => {
         semester: course.semester,
         year: course.year,
         courseType: course.courseType,
+        projectFeature: {
+          mode: course?.projectFeature?.mode || "lab_final",
+          totalProjectMarks: Number(course?.projectFeature?.totalProjectMarks || 40),
+          allowStudentGroupCreation:
+            course?.projectFeature?.allowStudentGroupCreation !== false,
+          allowTeacherGroupEditing:
+            course?.projectFeature?.allowTeacherGroupEditing !== false,
+          visibleToStudents:
+            course?.projectFeature?.visibleToStudents !== false,
+        },
       },
       assessments: assessmentsResponse,
       totalObtained: summary.totalObtained,
@@ -533,7 +578,38 @@ const getStudentCourseDetails = async (req, res) => {
   }
 };
 
+const getStudentCourseMaterials = async (req, res) => {
+  try {
+    const studentId = req.user.userId;
+    const { courseId } = req.params;
+
+    const enrollment = await Enrollment.findOne({
+      student: studentId,
+      course: courseId,
+    }).populate("course");
+
+    if (!enrollment || !enrollment.course) {
+      return res.status(404).json({ message: "Course not found for this student" });
+    }
+
+    if (enrollment.course.archived === true) {
+      return res.status(404).json({ message: "Course not found for this student" });
+    }
+
+    const materials = await CourseMaterial.find({
+      course: courseId,
+      visibleToStudents: true,
+    }).sort({ sortOrder: 1, createdAt: -1 });
+
+    res.json(materials);
+  } catch (err) {
+    console.error("getStudentCourseMaterials error", err);
+    res.status(500).json({ message: "Server error loading course materials" });
+  }
+};
+
 module.exports = {
   getStudentCourses,
   getStudentCourseDetails,
+  getStudentCourseMaterials,
 };

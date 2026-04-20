@@ -1,4 +1,32 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
+
+const projectFeatureSchema = new mongoose.Schema(
+  {
+    mode: {
+      type: String,
+      enum: ["lab_final", "project"],
+      default: "lab_final",
+    },
+    totalProjectMarks: {
+      type: Number,
+      default: 40,
+      min: 0,
+    },
+    allowStudentGroupCreation: {
+      type: Boolean,
+      default: true,
+    },
+    allowTeacherGroupEditing: {
+      type: Boolean,
+      default: true,
+    },
+    visibleToStudents: {
+      type: Boolean,
+      default: true,
+    },
+  },
+  { _id: false }
+);
 
 const courseSchema = new mongoose.Schema(
   {
@@ -14,27 +42,32 @@ const courseSchema = new mongoose.Schema(
       type: String,
     },
     semester: {
-      type: String, // e.g. "Fall", "Spring"
+      type: String,
     },
     year: {
       type: Number,
     },
     courseType: {
       type: String,
-      enum: ['theory', 'lab', 'hybrid'],
-      default: 'theory',
+      enum: ["theory", "lab", "hybrid"],
+      default: "theory",
+    },
+
+    projectFeature: {
+      type: projectFeatureSchema,
+      default: () => ({}),
     },
 
     classTestPolicy: {
       mode: {
         type: String,
         enum: [
-          'best_n_individual_scaled',
-          'best_n_average_scaled',
-          'best_one_scaled',
-          'manual_average_scaled',
+          "best_n_individual_scaled",
+          "best_n_average_scaled",
+          "best_one_scaled",
+          "manual_average_scaled",
         ],
-        default: 'best_n_average_scaled',
+        default: "best_n_average_scaled",
       },
       bestCount: {
         type: Number,
@@ -49,15 +82,15 @@ const courseSchema = new mongoose.Schema(
       manualSelectedAssessmentIds: [
         {
           type: mongoose.Schema.Types.ObjectId,
-          ref: 'Assessment',
+          ref: "Assessment",
         },
       ],
     },
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
-      required: true, // teacher
+      ref: "User",
+      required: true,
     },
     archived: { type: Boolean, default: false },
     archivedAt: { type: Date, default: null },
@@ -65,6 +98,6 @@ const courseSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-const Course = mongoose.model('Course', courseSchema);
+const Course = mongoose.model("Course", courseSchema);
 
 module.exports = Course;
