@@ -1,7 +1,62 @@
 const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const ProjectGroup = require("../models/ProjectGroup");
-const User = require("../models/User");
+const ProjectFormConfig = require("../models/ProjectFormConfig");
+
+const DEFAULT_FIELDS = {
+  groupName: {
+    visibleToStudent: true,
+    editableByStudent: false,
+    requiredOnGroupCreate: true,
+    requiredOnProjectUpdate: false,
+  },
+  projectTitle: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: true,
+  },
+  projectSummary: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  driveLink: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  repositoryLink: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  contactEmail: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  additionalNote: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+};
+
+const FIELD_LABELS = {
+  groupName: "Group name",
+  projectTitle: "Project title",
+  projectSummary: "Project summary",
+  driveLink: "Drive link",
+  repositoryLink: "Repository link",
+  contactEmail: "Contact email",
+  additionalNote: "Additional note",
+};
 
 const normalizeIds = (arr = []) => {
   const seen = new Set();
@@ -17,6 +72,32 @@ const normalizeIds = (arr = []) => {
 
 const cleanString = (value) => String(value || "").trim();
 
+const mergeProjectFields = (rawFields = {}) => {
+  const merged = {};
+
+  Object.keys(DEFAULT_FIELDS).forEach((key) => {
+    merged[key] = {
+      visibleToStudent:
+        rawFields?.[key]?.visibleToStudent ??
+        DEFAULT_FIELDS[key].visibleToStudent,
+
+      editableByStudent:
+        rawFields?.[key]?.editableByStudent ??
+        DEFAULT_FIELDS[key].editableByStudent,
+
+      requiredOnGroupCreate:
+        rawFields?.[key]?.requiredOnGroupCreate ??
+        DEFAULT_FIELDS[key].requiredOnGroupCreate,
+
+      requiredOnProjectUpdate:
+        rawFields?.[key]?.requiredOnProjectUpdate ??
+        DEFAULT_FIELDS[key].requiredOnProjectUpdate,
+    };
+  });
+
+  return merged;
+};
+
 const getProjectInfoFromBody = (body = {}) => ({
   groupName: cleanString(body.groupName),
   projectTitle: cleanString(body.projectTitle),
@@ -24,17 +105,50 @@ const getProjectInfoFromBody = (body = {}) => ({
   driveLink: cleanString(body.driveLink),
   repositoryLink: cleanString(body.repositoryLink),
   contactEmail: cleanString(body.contactEmail),
-  note: cleanString(body.note),
+  additionalNote: cleanString(body.additionalNote),
 });
 
 const applyProjectInfoToGroup = (group, info) => {
-  group.groupName = info.groupName;
-  group.projectTitle = info.projectTitle;
-  group.projectSummary = info.projectSummary;
-  group.driveLink = info.driveLink;
-  group.repositoryLink = info.repositoryLink;
-  group.contactEmail = info.contactEmail;
-  group.note = info.note;
+  if (info.groupName !== undefined) group.groupName = info.groupName;
+  if (info.projectTitle !== undefined) group.projectTitle = info.projectTitle;
+  if (info.projectSummary !== undefined) group.projectSummary = info.projectSummary;
+  if (info.driveLink !== undefined) group.driveLink = info.driveLink;
+  if (info.repositoryLink !== undefined) group.repositoryLink = info.repositoryLink;
+  if (info.contactEmail !== undefined) group.contactEmail = info.contactEmail;
+  if (info.additionalNote !== undefined) group.additionalNote = info.additionalNote;
+};
+
+const pickEditableProjectInfo = (body = {}, configFields = {}) => {
+  const cleaned = getProjectInfoFromBody(body);
+  const payload = {};
+
+  Object.keys(cleaned).forEach((key) => {
+    if (configFields?.[key]?.editableByStudent) {
+      payload[key] = cleaned[key];
+    }
+  });
+
+  return payload;
+};
+
+const validateRequiredFields = (info = {}, configFields = {}, mode = "groupCreate") => {
+  const ruleKey =
+    mode === "projectUpdate" ? "requiredOnProjectUpdate" : "requiredOnGroupCreate";
+
+  for (const key of Object.keys(configFields)) {
+    if (!configFields[key]?.[ruleKey]) continue;
+
+    if (!String(info[key] || "").trim()) {
+      const err = new Error(`${FIELD_LABELS[key] || key} is required`);
+      err.status = 400;
+      throw err;
+    }
+  }
+};
+
+const getProjectFormFields = async (courseId) => {
+  const config = await ProjectFormConfig.findOne({ course: courseId });
+  return mergeProjectFields(config?.fields || {});
 };
 
 const ensureTeacherCourseAccess = async (teacherId, courseId) => {
@@ -93,7 +207,7 @@ const formatGroup = (group) => ({
   driveLink: group.driveLink || "",
   repositoryLink: group.repositoryLink || "",
   contactEmail: group.contactEmail || "",
-  note: group.note || "",
+  additionalNote: group.additionalNote || "",
   createdByRole: group.createdByRole || "student",
   leader: group.leader
     ? {
@@ -362,7 +476,6 @@ const createStudentProjectGroup = async (req, res) => {
     const studentId = req.user.userId;
     const { courseId } = req.params;
     const { memberIds = [] } = req.body;
-    const info = getProjectInfoFromBody(req.body);
 
     const course = await ensureStudentEnrollment(studentId, courseId);
     validateProjectMode(course);
@@ -383,6 +496,20 @@ const createStudentProjectGroup = async (req, res) => {
     if (alreadyGrouped) {
       return res.status(400).json({ message: "You are already in a project group" });
     }
+
+    const configFields = await getProjectFormFields(courseId);
+
+    const info = {
+      groupName: cleanString(req.body.groupName),
+      projectTitle: cleanString(req.body.projectTitle),
+      projectSummary: "",
+      driveLink: "",
+      repositoryLink: "",
+      contactEmail: "",
+      additionalNote: "",
+    };
+
+    validateRequiredFields(info, configFields, "groupCreate");
 
     const finalMembers = normalizeIds([studentId, ...memberIds]);
     const enrolledIds = await getEnrolledStudentIds(courseId);
@@ -412,7 +539,6 @@ const updateStudentProjectInfo = async (req, res) => {
   try {
     const studentId = req.user.userId;
     const { courseId } = req.params;
-    const info = getProjectInfoFromBody(req.body);
 
     const course = await ensureStudentEnrollment(studentId, courseId);
     validateProjectMode(course);
@@ -436,7 +562,16 @@ const updateStudentProjectInfo = async (req, res) => {
       });
     }
 
-    applyProjectInfoToGroup(group, info);
+    const configFields = await getProjectFormFields(courseId);
+    const editableInfo = pickEditableProjectInfo(req.body, configFields);
+
+    validateRequiredFields(
+      { ...formatGroup(group), ...editableInfo },
+      configFields,
+      "projectUpdate"
+    );
+
+    applyProjectInfoToGroup(group, editableInfo);
     await group.save();
 
     const populated = await ProjectGroup.findById(group._id)

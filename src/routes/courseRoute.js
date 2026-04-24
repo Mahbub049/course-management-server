@@ -34,6 +34,28 @@ const {
 
 const { getMarksForCourse, saveMarksForCourse } = require("../controllers/markController");
 
+
+const {
+  getObeSetup,
+  saveObeSetup,
+} = require('../controllers/obeSetupController');
+
+const {
+  getObeBlueprints,
+  createObeBlueprint,
+  updateObeBlueprint,
+  deleteObeBlueprint,
+} = require('../controllers/obeBlueprintController');
+
+const {
+  getObeMarkEntry,
+  saveObeMarks,
+} = require('../controllers/obeMarkController');
+
+const {
+  getObeOutput,
+} = require('../controllers/obeOutputController');
+
 const {
   getAttendanceSummary,
   saveAttendanceSummary,
@@ -57,14 +79,15 @@ const {
 const {
   getTeacherProjectPhases,
   createProjectPhase,
+  moveProjectPhase,
   updateProjectPhase,
   deleteProjectPhase,
 } = require("../controllers/projectPhaseController");
 
 const {
   getTeacherProjectSubmissions,
+  downloadTeacherProjectSubmissionZip,
 } = require("../controllers/projectSubmissionController");
-
 
 const {
   getTeacherProjectEvaluations,
@@ -126,6 +149,22 @@ router.delete("/assessments/:assessmentId", ...teacherOnly, deleteAssessment);
 router.get("/:courseId/marks", ...teacherOnly, getMarksForCourse);
 router.post("/:courseId/marks", ...teacherOnly, saveMarksForCourse);
 
+
+// ===================================================
+// ✅ OBE / CO-PO MODULE
+// ===================================================
+router.get('/:courseId/obe/setup', ...teacherOnly, getObeSetup);
+router.put('/:courseId/obe/setup', ...teacherOnly, saveObeSetup);
+
+router.get('/:courseId/obe/blueprints', ...teacherOnly, getObeBlueprints);
+router.post('/:courseId/obe/blueprints', ...teacherOnly, createObeBlueprint);
+router.put('/:courseId/obe/blueprints/:blueprintId', ...teacherOnly, updateObeBlueprint);
+router.delete('/:courseId/obe/blueprints/:blueprintId', ...teacherOnly, deleteObeBlueprint);
+
+
+router.get('/:courseId/obe/marks', ...teacherOnly, getObeMarkEntry);
+router.post('/:courseId/obe/marks', ...teacherOnly, saveObeMarks);
+router.get('/:courseId/obe/output', ...teacherOnly, getObeOutput);
 // ===================================================
 // ✅ ATTENDANCE SUMMARY
 // ===================================================
@@ -162,14 +201,20 @@ router.delete("/:courseId/project-groups/:groupId", ...teacherOnly, deleteTeache
 router.get("/:courseId/project-phases", ...teacherOnly, getTeacherProjectPhases);
 router.post("/:courseId/project-phases", ...teacherOnly, createProjectPhase);
 router.put("/:courseId/project-phases/:phaseId", ...teacherOnly, updateProjectPhase);
+router.post("/:courseId/project-phases/:phaseId/move", ...teacherOnly, moveProjectPhase);
 router.delete("/:courseId/project-phases/:phaseId", ...teacherOnly, deleteProjectPhase);
 
 router.get("/:courseId/project-submissions", ...teacherOnly, getTeacherProjectSubmissions);
-
+router.get(
+  "/:courseId/project-submissions/:phaseId/download-zip",
+  ...teacherOnly,
+  downloadTeacherProjectSubmissionZip
+);
 
 router.get("/:courseId/project-evaluations", ...teacherOnly, getTeacherProjectEvaluations);
 router.post("/:courseId/project-evaluations/:phaseId", ...teacherOnly, saveProjectEvaluation);
 
+router.get("/:courseId/project-sync", ...teacherOnly, getTeacherProjectSyncState);
 
 router.get("/:courseId/project-sync", ...teacherOnly, getTeacherProjectSyncState);
 router.put("/:courseId/project-sync", ...teacherOnly, saveTeacherProjectSyncConfig);

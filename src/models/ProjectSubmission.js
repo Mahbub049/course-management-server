@@ -42,8 +42,8 @@ const projectSubmissionSchema = new mongoose.Schema(
 
     link: {
       type: String,
-      required: true,
       trim: true,
+      default: "",
     },
 
     note: {
@@ -60,6 +60,13 @@ const projectSubmissionSchema = new mongoose.Schema(
     lastUpdatedAt: {
       type: Date,
       default: Date.now,
+    },
+
+    attachment: {
+      originalName: { type: String, default: "" },
+      storagePath: { type: String, default: "" },
+      mimeType: { type: String, default: "" },
+      size: { type: Number, default: 0 },
     },
   },
   { timestamps: true }

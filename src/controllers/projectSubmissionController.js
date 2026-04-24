@@ -1,8 +1,19 @@
+const path = require("path");
+const archiver = require("archiver");
+
 const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const ProjectGroup = require("../models/ProjectGroup");
 const ProjectPhase = require("../models/ProjectPhase");
 const ProjectSubmission = require("../models/ProjectSubmission");
+
+const {
+  buildProjectSubmissionStoragePath,
+  uploadProjectSubmissionBuffer,
+  createProjectSubmissionSignedUrl,
+  downloadProjectSubmissionObject,
+  sanitizeFileName,
+} = require("../utils/projectSubmissionStorage");
 
 const cleanString = (value) => String(value || "").trim();
 
@@ -17,6 +28,8 @@ const formatSubmission = (submission, extra = {}) => ({
   submissionType: submission.submissionType,
   link: submission.link || "",
   note: submission.note || "",
+  fileUrl: submission.fileUrl || "",
+  fileName: submission.attachment?.originalName || "",
   submittedAt: submission.submittedAt,
   lastUpdatedAt: submission.lastUpdatedAt,
   isLate: extra.isLate || false,
@@ -109,6 +122,163 @@ const getStudentGroupForCourse = async (studentId, courseId) => {
   });
 };
 
+const attachSignedUrlToSubmission = async (submissionDoc) => {
+  if (!submissionDoc) return null;
+
+  const submission =
+    typeof submissionDoc.toObject === "function"
+      ? submissionDoc.toObject()
+      : { ...submissionDoc };
+
+  let fileUrl = "";
+  if (submission?.attachment?.storagePath) {
+    fileUrl = await createProjectSubmissionSignedUrl(
+      submission.attachment.storagePath
+    );
+  }
+
+  submission.fileUrl = fileUrl;
+  return submission;
+};
+
+const safeLabel = (value, fallback = "item") => {
+  return String(value || fallback)
+    .trim()
+    .replace(/[^a-zA-Z0-9-_ ]/g, "")
+    .replace(/\s+/g, "_")
+    .slice(0, 80) || fallback;
+};
+
+const buildSubmissionInfoText = (submissionItem, phase) => {
+  return [
+    `Phase: ${phase?.title || ""}`,
+    `Phase Type: ${phase?.phaseType || ""}`,
+    `Group/Student Type: ${submissionItem?.targetType || ""}`,
+    `Target Name: ${submissionItem?.targetName || ""}`,
+    `Submitted: ${submissionItem?.hasSubmission ? "Yes" : "No"}`,
+    `Submitted By: ${submissionItem?.submittedBy?.name || ""}${
+      submissionItem?.submittedBy?.roll ? ` (${submissionItem.submittedBy.roll})` : ""
+    }`,
+    `Submitted At: ${submissionItem?.submittedAt || ""}`,
+    `Last Updated: ${submissionItem?.lastUpdatedAt || ""}`,
+    `Late: ${submissionItem?.isLate ? "Yes" : "No"}`,
+    `Link: ${submissionItem?.link || ""}`,
+    `File Name: ${submissionItem?.fileName || ""}`,
+    "",
+    "Note:",
+    submissionItem?.note || "",
+  ].join("\n");
+};
+
+const buildTeacherSubmissionView = ({
+  phase,
+  targets,
+  submissionDocs,
+}) => {
+  const submissionMap = new Map();
+
+  for (const item of submissionDocs) {
+    if (phase.phaseType === "group" && item.group?._id) {
+      submissionMap.set(`group:${String(item.group._id)}`, item);
+    } else if (phase.phaseType === "individual" && item.student?._id) {
+      submissionMap.set(`student:${String(item.student._id)}`, item);
+    }
+  }
+
+  const submissionItems = targets.map((target) => {
+    const key =
+      phase.phaseType === "group"
+        ? `group:${String(target.id)}`
+        : `student:${String(target.id)}`;
+
+    const submission = submissionMap.get(key);
+
+    if (!submission) {
+      return {
+        id: key,
+        targetId: String(target.id),
+        targetType: phase.phaseType === "group" ? "group" : "student",
+        targetName: target.name,
+        targetSecondary: target.secondary || "",
+        memberCount: target.memberCount || 0,
+        hasSubmission: false,
+        hasFile: false,
+        hasLink: false,
+        fileName: "",
+        fileUrl: "",
+        link: "",
+        note: "",
+        submittedAt: null,
+        lastUpdatedAt: null,
+        isLate: false,
+        submittedBy: null,
+        student: target.student || null,
+        group: target.group || null,
+      };
+    }
+
+    const formatted = formatSubmission(submission, {
+      isLate: getLateStatus(phase.dueDate, submission.submittedAt),
+    });
+
+    return {
+      id: formatted.id,
+      targetId: String(target.id),
+      targetType: phase.phaseType === "group" ? "group" : "student",
+      targetName: target.name,
+      targetSecondary: target.secondary || "",
+      memberCount: target.memberCount || 0,
+      hasSubmission: true,
+      hasFile: Boolean(formatted.fileUrl),
+      hasLink: Boolean(formatted.link),
+      fileName: formatted.fileName || "",
+      fileUrl: formatted.fileUrl || "",
+      link: formatted.link || "",
+      note: formatted.note || "",
+      submittedAt: formatted.submittedAt,
+      lastUpdatedAt: formatted.lastUpdatedAt,
+      isLate: formatted.isLate,
+      submittedBy: formatted.submittedBy,
+      student: formatted.student || target.student || null,
+      group: formatted.group || target.group || null,
+    };
+  });
+
+  const submittedCount = submissionItems.filter((item) => item.hasSubmission).length;
+  const pendingCount = submissionItems.length - submittedCount;
+  const withFileCount = submissionItems.filter((item) => item.hasFile).length;
+  const linkOnlyCount = submissionItems.filter(
+    (item) => item.hasSubmission && item.hasLink && !item.hasFile
+  ).length;
+
+  submissionItems.sort((a, b) => {
+    if (a.hasSubmission !== b.hasSubmission) return a.hasSubmission ? -1 : 1;
+    return a.targetName.localeCompare(b.targetName);
+  });
+
+  return {
+    phase: {
+      id: String(phase._id),
+      title: phase.title || "",
+      instructions: phase.instructions || "",
+      phaseType: phase.phaseType || "group",
+      dueDate: phase.dueDate,
+      totalMarks: Number(phase.totalMarks || 0),
+      order: Number(phase.order || 0),
+      isVisibleToStudents: phase.isVisibleToStudents !== false,
+      resourceLinks: Array.isArray(phase.resourceLinks) ? phase.resourceLinks : [],
+    },
+    overview: {
+      expectedCount: submissionItems.length,
+      submittedCount,
+      pendingCount,
+      withFileCount,
+      linkOnlyCount,
+    },
+    submissions: submissionItems,
+  };
+};
+
 const getStudentProjectSubmissions = async (req, res) => {
   try {
     const studentId = req.user.userId;
@@ -122,30 +292,27 @@ const getStudentProjectSubmissions = async (req, res) => {
     }).sort({ order: 1, createdAt: 1 });
 
     const myGroup = await getStudentGroupForCourse(studentId, courseId);
-
     const phaseIds = phases.map((p) => p._id);
 
     const submissions = await ProjectSubmission.find({
       course: courseId,
       phase: { $in: phaseIds },
-      $or: [
-        { student: studentId },
-        ...(myGroup ? [{ group: myGroup._id }] : []),
-      ],
+      $or: [{ student: studentId }, ...(myGroup ? [{ group: myGroup._id }] : [])],
     })
       .populate("phase")
       .populate("submittedBy", "name username email")
       .populate("student", "name username email")
       .populate("group", "groupName projectTitle");
 
-    const submissionMap = new Map(
-      submissions.map((item) => [String(item.phase._id), item])
-    );
+    const submissionMap = new Map();
+    for (const item of submissions) {
+      const withUrl = await attachSignedUrlToSubmission(item);
+      submissionMap.set(String(item.phase._id), withUrl);
+    }
 
     const result = phases.map((phase) => {
       const submission = submissionMap.get(String(phase._id));
-      const canSubmit =
-        phase.phaseType === "group" ? Boolean(myGroup) : true;
+      const canSubmit = phase.phaseType === "group" ? Boolean(myGroup) : true;
 
       return {
         phase: {
@@ -157,6 +324,7 @@ const getStudentProjectSubmissions = async (req, res) => {
           totalMarks: Number(phase.totalMarks || 0),
           order: Number(phase.order || 0),
           isVisibleToStudents: phase.isVisibleToStudents !== false,
+          resourceLinks: Array.isArray(phase.resourceLinks) ? phase.resourceLinks : [],
         },
         submission: submission
           ? formatSubmission(submission, {
@@ -196,8 +364,10 @@ const submitStudentProjectPhase = async (req, res) => {
 
     await ensureStudentAccess(studentId, courseId);
 
-    if (!link) {
-      return res.status(400).json({ message: "Submission link is required" });
+    if (!link && !req.file) {
+      return res.status(400).json({
+        message: "Please provide submission link or upload a file",
+      });
     }
 
     const phase = await ProjectPhase.findOne({
@@ -210,8 +380,7 @@ const submitStudentProjectPhase = async (req, res) => {
       return res.status(404).json({ message: "Project phase not found" });
     }
 
-    let submissionQuery = {};
-    let submissionType = phase.phaseType;
+    const submissionType = phase.phaseType;
 
     if (phase.phaseType === "group") {
       const group = await getStudentGroupForCourse(studentId, courseId);
@@ -222,7 +391,7 @@ const submitStudentProjectPhase = async (req, res) => {
         });
       }
 
-      submissionQuery = {
+      const submissionQuery = {
         course: courseId,
         phase: phaseId,
         group: group._id,
@@ -235,6 +404,29 @@ const submitStudentProjectPhase = async (req, res) => {
         submission.note = note;
         submission.submittedBy = studentId;
         submission.lastUpdatedAt = new Date();
+
+        if (req.file) {
+          const storagePath = buildProjectSubmissionStoragePath({
+            courseId,
+            phaseId,
+            studentId,
+            originalFileName: req.file.originalname,
+          });
+
+          await uploadProjectSubmissionBuffer({
+            buffer: req.file.buffer,
+            storagePath,
+            mimeType: req.file.mimetype,
+          });
+
+          submission.attachment = {
+            originalName: req.file.originalname,
+            storagePath,
+            mimeType: req.file.mimetype,
+            size: req.file.size,
+          };
+        }
+
         await submission.save();
 
         submission = await ProjectSubmission.findById(submission._id)
@@ -242,14 +434,16 @@ const submitStudentProjectPhase = async (req, res) => {
           .populate("submittedBy", "name username email")
           .populate("group", "groupName projectTitle");
 
+        const withUrl = await attachSignedUrlToSubmission(submission);
+
         return res.json(
-          formatSubmission(submission, {
-            isLate: getLateStatus(phase.dueDate, submission.submittedAt),
+          formatSubmission(withUrl, {
+            isLate: getLateStatus(phase.dueDate, withUrl.submittedAt),
           })
         );
       }
 
-      submission = await ProjectSubmission.create({
+      const newSubmissionData = {
         course: courseId,
         phase: phaseId,
         submissionType,
@@ -260,21 +454,47 @@ const submitStudentProjectPhase = async (req, res) => {
         note,
         submittedAt: new Date(),
         lastUpdatedAt: new Date(),
-      });
+      };
+
+      if (req.file) {
+        const storagePath = buildProjectSubmissionStoragePath({
+          courseId,
+          phaseId,
+          studentId,
+          originalFileName: req.file.originalname,
+        });
+
+        await uploadProjectSubmissionBuffer({
+          buffer: req.file.buffer,
+          storagePath,
+          mimeType: req.file.mimetype,
+        });
+
+        newSubmissionData.attachment = {
+          originalName: req.file.originalname,
+          storagePath,
+          mimeType: req.file.mimetype,
+          size: req.file.size,
+        };
+      }
+
+      submission = await ProjectSubmission.create(newSubmissionData);
 
       submission = await ProjectSubmission.findById(submission._id)
         .populate("phase")
         .populate("submittedBy", "name username email")
         .populate("group", "groupName projectTitle");
 
+      const withUrl = await attachSignedUrlToSubmission(submission);
+
       return res.status(201).json(
-        formatSubmission(submission, {
-          isLate: getLateStatus(phase.dueDate, submission.submittedAt),
+        formatSubmission(withUrl, {
+          isLate: getLateStatus(phase.dueDate, withUrl.submittedAt),
         })
       );
     }
 
-    submissionQuery = {
+    const submissionQuery = {
       course: courseId,
       phase: phaseId,
       student: studentId,
@@ -287,6 +507,29 @@ const submitStudentProjectPhase = async (req, res) => {
       submission.note = note;
       submission.submittedBy = studentId;
       submission.lastUpdatedAt = new Date();
+
+      if (req.file) {
+        const storagePath = buildProjectSubmissionStoragePath({
+          courseId,
+          phaseId,
+          studentId,
+          originalFileName: req.file.originalname,
+        });
+
+        await uploadProjectSubmissionBuffer({
+          buffer: req.file.buffer,
+          storagePath,
+          mimeType: req.file.mimetype,
+        });
+
+        submission.attachment = {
+          originalName: req.file.originalname,
+          storagePath,
+          mimeType: req.file.mimetype,
+          size: req.file.size,
+        };
+      }
+
       await submission.save();
 
       submission = await ProjectSubmission.findById(submission._id)
@@ -294,14 +537,16 @@ const submitStudentProjectPhase = async (req, res) => {
         .populate("submittedBy", "name username email")
         .populate("student", "name username email");
 
+      const withUrl = await attachSignedUrlToSubmission(submission);
+
       return res.json(
-        formatSubmission(submission, {
-          isLate: getLateStatus(phase.dueDate, submission.submittedAt),
+        formatSubmission(withUrl, {
+          isLate: getLateStatus(phase.dueDate, withUrl.submittedAt),
         })
       );
     }
 
-    submission = await ProjectSubmission.create({
+    const newSubmissionData = {
       course: courseId,
       phase: phaseId,
       submissionType,
@@ -312,16 +557,42 @@ const submitStudentProjectPhase = async (req, res) => {
       note,
       submittedAt: new Date(),
       lastUpdatedAt: new Date(),
-    });
+    };
+
+    if (req.file) {
+      const storagePath = buildProjectSubmissionStoragePath({
+        courseId,
+        phaseId,
+        studentId,
+        originalFileName: req.file.originalname,
+      });
+
+      await uploadProjectSubmissionBuffer({
+        buffer: req.file.buffer,
+        storagePath,
+        mimeType: req.file.mimetype,
+      });
+
+      newSubmissionData.attachment = {
+        originalName: req.file.originalname,
+        storagePath,
+        mimeType: req.file.mimetype,
+        size: req.file.size,
+      };
+    }
+
+    submission = await ProjectSubmission.create(newSubmissionData);
 
     submission = await ProjectSubmission.findById(submission._id)
       .populate("phase")
       .populate("submittedBy", "name username email")
       .populate("student", "name username email");
 
+    const withUrl = await attachSignedUrlToSubmission(submission);
+
     return res.status(201).json(
-      formatSubmission(submission, {
-        isLate: getLateStatus(phase.dueDate, submission.submittedAt),
+      formatSubmission(withUrl, {
+        isLate: getLateStatus(phase.dueDate, withUrl.submittedAt),
       })
     );
   } catch (err) {
@@ -339,48 +610,97 @@ const getTeacherProjectSubmissions = async (req, res) => {
 
     await ensureTeacherCourseAccess(teacherId, courseId);
 
-    const phases = await ProjectPhase.find({ course: courseId }).sort({
-      order: 1,
-      createdAt: 1,
-    });
+    const [phases, groups, enrollments, submissions] = await Promise.all([
+      ProjectPhase.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
+      ProjectGroup.find({ course: courseId })
+        .populate("leader", "name username email")
+        .populate("members", "name username email")
+        .sort({ groupName: 1, createdAt: 1 }),
+      Enrollment.find({ course: courseId }).populate("student", "name username email"),
+      ProjectSubmission.find({ course: courseId })
+        .populate("phase")
+        .populate("submittedBy", "name username email")
+        .populate("student", "name username email")
+        .populate("group", "groupName projectTitle"),
+    ]);
 
-    const phaseIds = phases.map((p) => p._id);
+    const groupTargets = groups.map((group) => ({
+      id: String(group._id),
+      name: group.groupName || "Unnamed Group",
+      secondary: group.projectTitle || "",
+      memberCount: Array.isArray(group.members) ? group.members.length : 0,
+      group: {
+        id: String(group._id),
+        groupName: group.groupName || "",
+        projectTitle: group.projectTitle || "",
+      },
+      student: null,
+    }));
 
-    const submissions = await ProjectSubmission.find({
-      course: courseId,
-      phase: { $in: phaseIds },
-    })
-      .populate("phase")
-      .populate("submittedBy", "name username email")
-      .populate("student", "name username email")
-      .populate("group", "groupName projectTitle");
-
-    const grouped = phases.map((phase) => {
-      const phaseSubmissions = submissions
-        .filter((item) => String(item.phase._id) === String(phase._id))
-        .map((item) =>
-          formatSubmission(item, {
-            isLate: getLateStatus(phase.dueDate, item.submittedAt),
-          })
-        );
-
-      return {
-        phase: {
-          id: String(phase._id),
-          title: phase.title || "",
-          instructions: phase.instructions || "",
-          phaseType: phase.phaseType || "group",
-          dueDate: phase.dueDate,
-          totalMarks: Number(phase.totalMarks || 0),
-          order: Number(phase.order || 0),
-          isVisibleToStudents: phase.isVisibleToStudents !== false,
+    const individualTargets = enrollments
+      .filter((item) => item.student)
+      .map((item) => ({
+        id: String(item.student._id),
+        name: item.student.name || "Unnamed Student",
+        secondary: item.student.username ? `Roll: ${item.student.username}` : "",
+        memberCount: 1,
+        group: null,
+        student: {
+          id: String(item.student._id),
+          name: item.student.name || "",
+          roll: item.student.username || "",
+          email: item.student.email || "",
         },
-        submissions: phaseSubmissions,
-        submittedCount: phaseSubmissions.length,
-      };
-    });
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
 
-    return res.json(grouped);
+    const phaseViews = [];
+
+    for (const phase of phases) {
+      const phaseDocs = submissions.filter(
+        (item) => String(item.phase?._id || item.phase) === String(phase._id)
+      );
+
+      const withUrls = [];
+      for (const doc of phaseDocs) {
+        withUrls.push(await attachSignedUrlToSubmission(doc));
+      }
+
+      const targets = phase.phaseType === "group" ? groupTargets : individualTargets;
+
+      phaseViews.push(
+        buildTeacherSubmissionView({
+          phase,
+          targets,
+          submissionDocs: withUrls,
+        })
+      );
+    }
+
+    const totals = phaseViews.reduce(
+      (acc, item) => {
+        acc.phaseCount += 1;
+        acc.expectedCount += item.overview.expectedCount;
+        acc.submittedCount += item.overview.submittedCount;
+        acc.pendingCount += item.overview.pendingCount;
+        acc.withFileCount += item.overview.withFileCount;
+        acc.linkOnlyCount += item.overview.linkOnlyCount;
+        return acc;
+      },
+      {
+        phaseCount: 0,
+        expectedCount: 0,
+        submittedCount: 0,
+        pendingCount: 0,
+        withFileCount: 0,
+        linkOnlyCount: 0,
+      }
+    );
+
+    return res.json({
+      totals,
+      phases: phaseViews,
+    });
   } catch (err) {
     console.error("getTeacherProjectSubmissions error:", err);
     return res.status(err.status || 500).json({
@@ -389,8 +709,116 @@ const getTeacherProjectSubmissions = async (req, res) => {
   }
 };
 
+const downloadTeacherProjectSubmissionZip = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const { courseId, phaseId } = req.params;
+
+    await ensureTeacherCourseAccess(teacherId, courseId);
+
+    const phase = await ProjectPhase.findOne({
+      _id: phaseId,
+      course: courseId,
+    });
+
+    if (!phase) {
+      return res.status(404).json({
+        message: "Project phase not found",
+      });
+    }
+
+    const submissionDocs = await ProjectSubmission.find({
+      course: courseId,
+      phase: phaseId,
+    })
+      .populate("submittedBy", "name username email")
+      .populate("student", "name username email")
+      .populate("group", "groupName projectTitle");
+
+    const zipItems = [];
+    for (const doc of submissionDocs) {
+      const withUrl = await attachSignedUrlToSubmission(doc);
+      zipItems.push(
+        formatSubmission(withUrl, {
+          isLate: getLateStatus(phase.dueDate, withUrl.submittedAt),
+        })
+      );
+    }
+
+    if (zipItems.length === 0) {
+      return res.status(404).json({
+        message: "No submissions found for this phase",
+      });
+    }
+
+    const zipName = `${safeLabel(phase.title || "phase")}_submissions.zip`;
+
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="${zipName}"`);
+
+    const archive = archiver("zip", { zlib: { level: 9 } });
+
+    archive.on("error", (err) => {
+      throw err;
+    });
+
+    archive.pipe(res);
+
+    for (let index = 0; index < zipItems.length; index += 1) {
+      const item = zipItems[index];
+
+      const folderName =
+        item.group?.groupName ||
+        item.student?.roll ||
+        item.student?.name ||
+        `submission_${index + 1}`;
+
+      const folder = `${String(index + 1).padStart(2, "0")}_${safeLabel(folderName)}`;
+
+      if (item.fileName && docHasStoragePath(item, submissionDocs[index])) {
+        const storagePath = submissionDocs[index]?.attachment?.storagePath || "";
+        const downloadResult = await downloadProjectSubmissionObject(storagePath);
+
+        if (downloadResult?.buffer) {
+          const originalName =
+            submissionDocs[index]?.attachment?.originalName ||
+            path.basename(storagePath) ||
+            "submission-file";
+          const sanitizedOriginalName = sanitizeFileName(originalName).safeName;
+
+          archive.append(downloadResult.buffer, {
+            name: `${folder}/${sanitizedOriginalName}`,
+          });
+        }
+      }
+
+      archive.append(buildSubmissionInfoText(item, phase), {
+        name: `${folder}/submission-info.txt`,
+      });
+    }
+
+    await archive.finalize();
+  } catch (err) {
+    console.error("downloadTeacherProjectSubmissionZip error:", err);
+    if (!res.headersSent) {
+      return res.status(err.status || 500).json({
+        message: err.message || "Failed to create ZIP file",
+      });
+    }
+  }
+};
+
+function docHasStoragePath(formattedItem, submissionDoc) {
+  return Boolean(
+    formattedItem?.fileName &&
+      submissionDoc?.attachment &&
+      submissionDoc.attachment.storagePath
+  );
+}
+
 module.exports = {
   getStudentProjectSubmissions,
   submitStudentProjectPhase,
   getTeacherProjectSubmissions,
+  downloadTeacherProjectSubmissionZip,
 };

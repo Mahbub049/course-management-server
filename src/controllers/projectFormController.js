@@ -2,6 +2,77 @@ const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const ProjectFormConfig = require("../models/ProjectFormConfig");
 
+const DEFAULT_FIELDS = {
+  groupName: {
+    visibleToStudent: true,
+    editableByStudent: false,
+    requiredOnGroupCreate: true,
+    requiredOnProjectUpdate: false,
+  },
+  projectTitle: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: true,
+  },
+  projectSummary: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  driveLink: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  repositoryLink: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  contactEmail: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+  additionalNote: {
+    visibleToStudent: true,
+    editableByStudent: true,
+    requiredOnGroupCreate: false,
+    requiredOnProjectUpdate: false,
+  },
+};
+
+const mergeProjectFields = (rawFields = {}) => {
+  const merged = {};
+
+  Object.keys(DEFAULT_FIELDS).forEach((key) => {
+    merged[key] = {
+      visibleToStudent:
+        rawFields?.[key]?.visibleToStudent ??
+        DEFAULT_FIELDS[key].visibleToStudent,
+
+      editableByStudent:
+        rawFields?.[key]?.editableByStudent ??
+        DEFAULT_FIELDS[key].editableByStudent,
+
+      requiredOnGroupCreate:
+        rawFields?.[key]?.requiredOnGroupCreate ??
+        DEFAULT_FIELDS[key].requiredOnGroupCreate,
+
+      requiredOnProjectUpdate:
+        rawFields?.[key]?.requiredOnProjectUpdate ??
+        DEFAULT_FIELDS[key].requiredOnProjectUpdate,
+    };
+  });
+
+  return merged;
+};
+
 const ensureTeacherAccess = async (teacherId, courseId) => {
   const course = await Course.findOne({
     _id: courseId,
@@ -54,7 +125,13 @@ const getOrCreateConfig = async (courseId) => {
   let config = await ProjectFormConfig.findOne({ course: courseId });
 
   if (!config) {
-    config = await ProjectFormConfig.create({ course: courseId });
+    config = await ProjectFormConfig.create({
+      course: courseId,
+      fields: mergeProjectFields(),
+    });
+  } else {
+    config.fields = mergeProjectFields(config.fields || {});
+    await config.save();
   }
 
   return config;
@@ -68,7 +145,10 @@ const getProjectFormConfig = async (req, res) => {
     await ensureTeacherAccess(teacherId, courseId);
     const config = await getOrCreateConfig(courseId);
 
-    return res.json(config);
+    return res.json({
+      ...config.toObject(),
+      fields: mergeProjectFields(config.fields || {}),
+    });
   } catch (err) {
     return res
       .status(err.status || 500)
@@ -84,18 +164,20 @@ const updateProjectFormConfig = async (req, res) => {
 
     await ensureTeacherAccess(teacherId, courseId);
 
-    let config = await getOrCreateConfig(courseId);
+    const config = await getOrCreateConfig(courseId);
 
     if (fields) {
-      config.fields = {
-        ...config.fields,
-        ...fields,
-      };
+      config.fields = mergeProjectFields(fields);
+    } else {
+      config.fields = mergeProjectFields(config.fields || {});
     }
 
     await config.save();
 
-    return res.json(config);
+    return res.json({
+      ...config.toObject(),
+      fields: mergeProjectFields(config.fields || {}),
+    });
   } catch (err) {
     return res
       .status(err.status || 500)
@@ -111,7 +193,10 @@ const getStudentProjectFormConfig = async (req, res) => {
     await ensureStudentAccess(studentId, courseId);
     const config = await getOrCreateConfig(courseId);
 
-    return res.json(config);
+    return res.json({
+      ...config.toObject(),
+      fields: mergeProjectFields(config.fields || {}),
+    });
   } catch (err) {
     return res
       .status(err.status || 500)

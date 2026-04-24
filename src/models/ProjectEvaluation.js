@@ -22,6 +22,12 @@ const projectEvaluationSchema = new mongoose.Schema(
       required: true,
     },
 
+    evaluationScope: {
+      type: String,
+      enum: ["combined", "member"],
+      default: "combined",
+    },
+
     group: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "ProjectGroup",
@@ -68,6 +74,7 @@ projectEvaluationSchema.index(
     unique: true,
     partialFilterExpression: {
       group: { $type: "objectId" },
+      student: null,
     },
   }
 );

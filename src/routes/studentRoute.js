@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 
+const projectSubmissionUpload = require("../middleware/projectSubmissionUploadMiddleware");
+
 const {
   getStudentCourses,
   getStudentCourseDetails,
@@ -54,7 +56,12 @@ router.put("/courses/:courseId/project-info", updateStudentProjectInfo);
 router.get("/courses/:courseId/project-phases", getStudentProjectPhases);
 
 router.get("/courses/:courseId/project-submissions", getStudentProjectSubmissions);
-router.post("/courses/:courseId/project-submissions/:phaseId", submitStudentProjectPhase);
+
+router.post(
+  "/courses/:courseId/project-submissions/:phaseId",
+  projectSubmissionUpload,
+  submitStudentProjectPhase
+);
 
 router.get("/courses/:courseId/project-evaluations", getStudentProjectEvaluations);
 

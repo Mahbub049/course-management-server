@@ -2,11 +2,19 @@ const mongoose = require("mongoose");
 
 const fieldConfigSchema = new mongoose.Schema(
   {
-    enabled: {
+    visibleToStudent: {
+      type: Boolean,
+      default: true,
+    },
+    editableByStudent: {
+      type: Boolean,
+      default: true,
+    },
+    requiredOnGroupCreate: {
       type: Boolean,
       default: false,
     },
-    required: {
+    requiredOnProjectUpdate: {
       type: Boolean,
       default: false,
     },
@@ -27,37 +35,72 @@ const projectFormConfigSchema = new mongoose.Schema(
     fields: {
       groupName: {
         type: fieldConfigSchema,
-        default: () => ({ enabled: true, required: true }),
+        default: () => ({
+          visibleToStudent: true,
+          editableByStudent: false,
+          requiredOnGroupCreate: true,
+          requiredOnProjectUpdate: false,
+        }),
       },
 
       projectTitle: {
         type: fieldConfigSchema,
-        default: () => ({ enabled: true, required: true }),
+        default: () => ({
+          visibleToStudent: true,
+          editableByStudent: true,
+          requiredOnGroupCreate: false,
+          requiredOnProjectUpdate: true,
+        }),
       },
 
       projectSummary: {
         type: fieldConfigSchema,
-        default: () => ({ enabled: true, required: false }),
+        default: () => ({
+          visibleToStudent: true,
+          editableByStudent: true,
+          requiredOnGroupCreate: false,
+          requiredOnProjectUpdate: false,
+        }),
       },
 
       driveLink: {
         type: fieldConfigSchema,
-        default: () => ({ enabled: true, required: false }),
+        default: () => ({
+          visibleToStudent: true,
+          editableByStudent: true,
+          requiredOnGroupCreate: false,
+          requiredOnProjectUpdate: false,
+        }),
       },
 
       repositoryLink: {
         type: fieldConfigSchema,
-        default: () => ({ enabled: false, required: false }),
+        default: () => ({
+          visibleToStudent: true,
+          editableByStudent: true,
+          requiredOnGroupCreate: false,
+          requiredOnProjectUpdate: false,
+        }),
       },
 
       contactEmail: {
         type: fieldConfigSchema,
-        default: () => ({ enabled: true, required: false }),
+        default: () => ({
+          visibleToStudent: true,
+          editableByStudent: true,
+          requiredOnGroupCreate: false,
+          requiredOnProjectUpdate: false,
+        }),
       },
 
-      note: {
+      additionalNote: {
         type: fieldConfigSchema,
-        default: () => ({ enabled: false, required: false }),
+        default: () => ({
+          visibleToStudent: true,
+          editableByStudent: true,
+          requiredOnGroupCreate: false,
+          requiredOnProjectUpdate: false,
+        }),
       },
     },
   },

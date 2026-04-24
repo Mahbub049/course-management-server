@@ -27,8 +27,35 @@ const {
   downloadSubmissionBuffer,
 } = require('../utils/labSubmissionStorage');
 
+function getValidDate(value) {
+  if (!value) return null;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function hasSubmissionDueDatePassed(cfg = {}) {
+  const dueDate = getValidDate(cfg?.dueDate);
+  if (!dueDate) return false;
+
+  return Date.now() > dueDate.getTime();
+}
+
+function isSubmissionCurrentlyOpen(cfg = {}) {
+  if (cfg?.submissionsOpen === false) return false;
+  if (hasSubmissionDueDatePassed(cfg)) return false;
+  return true;
+}
+
+function getSubmissionClosedReason(cfg = {}) {
+  if (cfg?.submissionsOpen === false) return 'manual';
+  if (hasSubmissionDueDatePassed(cfg)) return 'due_date_passed';
+  return null;
+}
+
 function normalizeSubmissionAssessment(a) {
   const cfg = a?.submissionConfig || {};
+  const dueDatePassed = hasSubmissionDueDatePassed(cfg);
+  const submissionsOpen = isSubmissionCurrentlyOpen(cfg);
 
   return {
     id: a._id.toString(),
@@ -46,8 +73,10 @@ function normalizeSubmissionAssessment(a) {
     allowResubmission: cfg.allowResubmission !== false,
     isVisibleToStudents: !!cfg.isVisibleToStudents,
     visibleAt: cfg.visibleAt || null,
-    submissionsOpen: cfg.submissionsOpen !== false,
+    submissionsOpen,
     closedAt: cfg.closedAt || null,
+    dueDatePassed,
+    closedReason: getSubmissionClosedReason(cfg),
     createdAt: a.createdAt || null,
     updatedAt: a.updatedAt || null,
   };
@@ -68,7 +97,7 @@ async function removeFileIfExists(filePath) {
     if (filePath) {
       await deleteSubmissionObject(filePath);
     }
-  } catch (_err) {}
+  } catch (_err) { }
 }
 
 function safeArchiveFileName(roll, originalFileName) {
@@ -908,11 +937,13 @@ const submitStudentAssessmentFile = async (req, res) => {
         .json({ message: 'This submission task is not available right now.' });
     }
 
-    if (cfg.submissionsOpen === false) {
-      return res
-        .status(400)
-        .json({ message: 'Submission is currently closed for this task.' });
-    }
+if (!isSubmissionCurrentlyOpen(cfg)) {
+  return res.status(400).json({
+    message: hasSubmissionDueDatePassed(cfg)
+      ? 'Submission deadline has passed for this task.'
+      : 'Submission is currently closed for this task.',
+  });
+}
 
     const enrollment = await ensureStudentEnrollment(assessment.course, studentId);
     if (!enrollment || !enrollment.course || enrollment.course.archived === true) {
@@ -1020,6 +1051,7 @@ module.exports = {
   deleteTeacherSubmissionAssessment,
   getTeacherAssessmentSubmissions,
   markSubmissionChecked,
+  syncSubmissionMarksToAssessment,
   saveAllSubmissionMarks,
   syncAllSubmissionMarksToAssessment,
   downloadAllTeacherAssessmentSubmissions,

@@ -1,5 +1,21 @@
 const mongoose = require("mongoose");
 
+const resourceLinkSchema = new mongoose.Schema(
+  {
+    label: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+    url: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+  },
+  { _id: false }
+);
+
 const projectPhaseSchema = new mongoose.Schema(
   {
     course: {
@@ -42,6 +58,11 @@ const projectPhaseSchema = new mongoose.Schema(
     order: {
       type: Number,
       default: 0,
+    },
+
+    resourceLinks: {
+      type: [resourceLinkSchema],
+      default: [],
     },
 
     isVisibleToStudents: {
