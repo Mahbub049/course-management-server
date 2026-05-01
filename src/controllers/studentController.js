@@ -26,10 +26,23 @@ const GRADE_THRESHOLDS = [
 ];
 
 const getGradeFromTotal = (total) => {
+  const score = Number(total || 0);
+
   for (const g of GRADE_THRESHOLDS) {
-    if (total >= g.min) return g.grade;
+    if (score >= g.min) return g.grade;
   }
+
   return 'F';
+};
+
+const isFinalAssessment = (assessment) => {
+  const name = lower(assessment?.name);
+  return assessment?.structureType === "lab_final" || name.includes("final");
+};
+
+const isIncompleteMark = (markDoc) => {
+  const status = String(markDoc?.status || "present").toLowerCase();
+  return status === "absent" || status === "incomplete";
 };
 
 const round2 = (x) => Math.round(Number(x || 0) * 100) / 100;
@@ -121,8 +134,21 @@ const computeCtContributionByPolicy = (course, entries) => {
 
 // ---------- Core computation ----------
 
-const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
+const computeSummaryForStudent = (
+  course,
+  assessments,
+  marksByAssessment,
+  markDocsByAssessment = {}
+) => {
   const courseType = getCourseType(course);
+
+  const hasFinalIncomplete = assessments.some((assessment) => {
+    const assessmentId = assessment._id.toString();
+    return (
+      isFinalAssessment(assessment) &&
+      isIncompleteMark(markDocsByAssessment[assessmentId])
+    );
+  });
 
   const getPct = (assessmentId, fullMarks) => {
     const mark = marksByAssessment[assessmentId];
@@ -209,11 +235,13 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
     const maxPossible = labFull + midFull + finalFull + attFull;
 
     const roundedTotal = round2(roundPolicyTotal(currentTotal));
-    const grade = getGradeFromTotal(roundedTotal);
+    const grade = hasFinalIncomplete ? "I" : getGradeFromTotal(roundedTotal);
 
     const A_PLUS = 80;
     const neededForAPlus =
-      roundedTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - roundedTotal);
+      hasFinalIncomplete || roundedTotal >= A_PLUS
+        ? 0
+        : Math.max(0, A_PLUS - roundedTotal);
 
     return {
       currentTotal: roundedTotal,
@@ -312,11 +340,13 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
   const maxPossible = ctFull + midFull + finalFull + attFull + assignPresFull;
 
   const roundedTotal = round2(roundPolicyTotal(currentTotal));
-  const grade = getGradeFromTotal(roundedTotal);
+  const grade = hasFinalIncomplete ? "I" : getGradeFromTotal(roundedTotal);
 
   const A_PLUS = 80;
   const neededForAPlus =
-    roundedTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - roundedTotal);
+    hasFinalIncomplete || roundedTotal >= A_PLUS
+      ? 0
+      : Math.max(0, A_PLUS - roundedTotal);
 
   return {
     currentTotal: roundedTotal,
@@ -386,6 +416,7 @@ const getStudentCourses = async (req, res) => {
 
     const marksByCourse = {};
     const marksByAssessmentByCourse = {};
+    const markDocsByAssessmentByCourse = {};
 
     for (const m of marks) {
       const assessmentId = m.assessment.toString();
@@ -398,6 +429,11 @@ const getStudentCourses = async (req, res) => {
 
       if (!marksByAssessmentByCourse[cid]) marksByAssessmentByCourse[cid] = {};
       marksByAssessmentByCourse[cid][assessmentId] = Number(m.obtainedMarks || 0);
+
+      if (!markDocsByAssessmentByCourse[cid]) {
+        markDocsByAssessmentByCourse[cid] = {};
+      }
+      markDocsByAssessmentByCourse[cid][assessmentId] = m;
     }
 
     const submissionDocs = await LabSubmission.find({
@@ -425,7 +461,8 @@ const getStudentCourses = async (req, res) => {
         const computed = computeSummaryForStudent(
           course,
           aList,
-          marksByAssessmentByCourse[cid] || {}
+          marksByAssessmentByCourse[cid] || {},
+          markDocsByAssessmentByCourse[cid] || {}
         );
 
         summary = {
@@ -536,6 +573,7 @@ const getStudentCourseDetails = async (req, res) => {
         isPublished: a.isPublished,
         publishedAt: a.publishedAt,
         obtainedMarks: obtained,
+        status: markDoc?.status || "present",
         subMarks: Array.isArray(markDoc?.subMarks) ? markDoc.subMarks : [],
       };
     });
@@ -543,7 +581,8 @@ const getStudentCourseDetails = async (req, res) => {
     const summary = computeSummaryForStudent(
       course,
       assessments,
-      marksByAssessment
+      marksByAssessment,
+      markDocsByAssessment
     );
 
     res.json({

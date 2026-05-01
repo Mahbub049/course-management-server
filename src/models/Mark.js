@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const subMarkSchema = new mongoose.Schema(
   {
@@ -20,17 +20,17 @@ const markSchema = new mongoose.Schema(
   {
     course: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Course',
+      ref: "Course",
       required: true,
     },
     student: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User',
+      ref: "User",
       required: true,
     },
     assessment: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Assessment',
+      ref: "Assessment",
       required: true,
     },
 
@@ -38,6 +38,12 @@ const markSchema = new mongoose.Schema(
       type: Number,
       required: true,
       min: 0,
+    },
+
+    status: {
+      type: String,
+      enum: ["present", "absent", "incomplete"],
+      default: "present",
     },
 
     subMarks: {
@@ -50,6 +56,6 @@ const markSchema = new mongoose.Schema(
 
 markSchema.index({ course: 1, student: 1, assessment: 1 }, { unique: true });
 
-const Mark = mongoose.model('Mark', markSchema);
+const Mark = mongoose.model("Mark", markSchema);
 
 module.exports = Mark;

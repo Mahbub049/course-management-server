@@ -1,6 +1,6 @@
-const Course = require('../models/Course');
-const Assessment = require('../models/Assessment');
-const Mark = require('../models/Mark');
+const Course = require("../models/Course");
+const Assessment = require("../models/Assessment");
+const Mark = require("../models/Mark");
 
 const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
@@ -12,55 +12,54 @@ function round2(num) {
 
 function sumSubMarks(subMarks = []) {
   return round2(
-    (subMarks || []).reduce((sum, item) => sum + Number(item?.obtainedMarks || 0), 0)
+    (subMarks || []).reduce(
+      (sum, item) => sum + Number(item?.obtainedMarks || 0),
+      0
+    )
   );
 }
 
-// GET /api/courses/:courseId/marks
+function normalizeMarkStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+
+  if (status === "a" || status === "absent") return "absent";
+  if (status === "i" || status === "incomplete") return "incomplete";
+
+  return "present";
+}
+
 const getMarksForCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
 
     const course = await findTeacherCourse(courseId, req.user.userId);
     if (!course) {
-      return res.status(404).json({ message: 'Course not found' });
+      return res.status(404).json({ message: "Course not found" });
     }
 
     const marks = await Mark.find({ course: courseId }).select(
-      'student assessment obtainedMarks subMarks'
+      "student assessment obtainedMarks subMarks status"
     );
 
     res.json(marks);
   } catch (err) {
-    console.error('Get marks error', err);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Get marks error", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
-// POST /api/courses/:courseId/marks
-// body:
-// {
-//   marks: [
-//     {
-//       studentId,
-//       assessmentId,
-//       obtainedMarks,
-//       subMarks?: [{ key, obtainedMarks }]
-//     }
-//   ]
-// }
 const saveMarksForCourse = async (req, res) => {
   try {
     const { courseId } = req.params;
     const { marks } = req.body;
 
     if (!Array.isArray(marks)) {
-      return res.status(400).json({ message: 'marks must be an array' });
+      return res.status(400).json({ message: "marks must be an array" });
     }
 
     const course = await findTeacherCourse(courseId, req.user.userId);
     if (!course) {
-      return res.status(404).json({ message: 'Course not found' });
+      return res.status(404).json({ message: "Course not found" });
     }
 
     const assessmentIds = marks
@@ -72,9 +71,7 @@ const saveMarksForCourse = async (req, res) => {
       course: courseId,
     });
 
-    const assessmentMap = new Map(
-      assessments.map((a) => [String(a._id), a])
-    );
+    const assessmentMap = new Map(assessments.map((a) => [String(a._id), a]));
 
     const cleaned = marks
       .map((m) => {
@@ -84,10 +81,17 @@ const saveMarksForCourse = async (req, res) => {
 
         if (!studentId || !assessmentId || !assessment) return null;
 
+        const rawStatus =
+          String(m?.obtainedMarks || "").trim().toUpperCase() === "A"
+            ? "absent"
+            : m.status;
+
+        const status = normalizeMarkStatus(rawStatus);
+
         const rawSubMarks = Array.isArray(m.subMarks) ? m.subMarks : [];
         const subMarks = rawSubMarks
           .map((s) => ({
-            key: String(s?.key || '').trim(),
+            key: String(s?.key || "").trim(),
             obtainedMarks: Number(s?.obtainedMarks || 0),
           }))
           .filter((s) => s.key);
@@ -97,7 +101,9 @@ const saveMarksForCourse = async (req, res) => {
             ? Number(m.obtainedMarks)
             : 0;
 
-        if (assessment.structureType === 'lab_final') {
+        if (status !== "present") {
+          obtainedMarks = 0;
+        } else if (assessment.structureType === "lab_final") {
           obtainedMarks = sumSubMarks(subMarks);
         }
 
@@ -105,7 +111,8 @@ const saveMarksForCourse = async (req, res) => {
           studentId,
           assessmentId,
           obtainedMarks: round2(obtainedMarks),
-          subMarks,
+          status,
+          subMarks: status === "present" ? subMarks : [],
         };
       })
       .filter(Boolean);
@@ -123,6 +130,7 @@ const saveMarksForCourse = async (req, res) => {
             student: m.studentId,
             assessment: m.assessmentId,
             obtainedMarks: m.obtainedMarks,
+            status: m.status,
             subMarks: m.subMarks,
           },
         },
@@ -134,10 +142,10 @@ const saveMarksForCourse = async (req, res) => {
       await Mark.bulkWrite(bulkOps);
     }
 
-    res.json({ message: 'Marks saved successfully' });
+    res.json({ message: "Marks saved successfully" });
   } catch (err) {
-    console.error('Save marks error', err);
-    res.status(500).json({ message: 'Server error' });
+    console.error("Save marks error", err);
+    res.status(500).json({ message: "Server error" });
   }
 };
 
