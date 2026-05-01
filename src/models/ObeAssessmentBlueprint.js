@@ -45,7 +45,7 @@ const obeAssessmentBlueprintSchema = new mongoose.Schema(
     },
     assessmentType: {
       type: String,
-      enum: ['ct', 'assignment', 'mid', 'final', 'presentation', 'viva', 'lab', 'custom'],
+      enum: ['ct', 'assignment', 'mid', 'final', 'attendance'],
       default: 'custom',
     },
     totalMarks: {

@@ -6,6 +6,18 @@ const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
 };
 
+const assessmentTypeOrder = {
+  ct: 1,
+  assignment: 2,
+  mid: 3,
+  final: 4,
+  attendance: 5,
+};
+
+const getAssessmentOrder = (type = '') => {
+  return assessmentTypeOrder[cleanText(type).toLowerCase()] || 999;
+};
+
 const cleanText = (value = '') => String(value || '').trim();
 const cleanCode = (value = '') => cleanText(value).toUpperCase();
 const round2 = (num) => Math.round(Number(num || 0) * 100) / 100;
@@ -46,7 +58,7 @@ const createObeBlueprint = async (req, res) => {
       assessmentName,
       assessmentType = 'custom',
       totalMarks = 0,
-      order = 0,
+      // order = 0,
       items = [],
       notes = '',
     } = req.body || {};
@@ -86,7 +98,7 @@ const createObeBlueprint = async (req, res) => {
       assessmentName: cleanText(assessmentName),
       assessmentType: cleanText(assessmentType).toLowerCase(),
       totalMarks: requestedTotal,
-      order: Number(order) || 0,
+      order: getAssessmentOrder(assessmentType),
       items: normalizedItems,
       notes: cleanText(notes),
     });
@@ -108,7 +120,7 @@ const updateObeBlueprint = async (req, res) => {
       assessmentName,
       assessmentType = 'custom',
       totalMarks = 0,
-      order = 0,
+      // order = 0,
       items = [],
       notes = '',
     } = req.body || {};
@@ -151,7 +163,7 @@ const updateObeBlueprint = async (req, res) => {
     blueprint.assessmentName = cleanText(assessmentName);
     blueprint.assessmentType = cleanText(assessmentType).toLowerCase();
     blueprint.totalMarks = requestedTotal;
-    blueprint.order = Number(order) || 0;
+    blueprint.order = getAssessmentOrder(assessmentType);
     blueprint.items = normalizedItems;
     blueprint.notes = cleanText(notes);
     await blueprint.save();

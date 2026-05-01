@@ -57,6 +57,11 @@ const {
 } = require('../controllers/obeOutputController');
 
 const {
+  getObeExportPayload,
+  downloadCourseReviewReport,
+} = require("../controllers/obeReportController");
+
+const {
   getAttendanceSummary,
   saveAttendanceSummary,
   getAttendanceSummaryFromSheet,
@@ -165,6 +170,9 @@ router.delete('/:courseId/obe/blueprints/:blueprintId', ...teacherOnly, deleteOb
 router.get('/:courseId/obe/marks', ...teacherOnly, getObeMarkEntry);
 router.post('/:courseId/obe/marks', ...teacherOnly, saveObeMarks);
 router.get('/:courseId/obe/output', ...teacherOnly, getObeOutput);
+
+router.get("/:courseId/obe/export-payload", ...teacherOnly, getObeExportPayload);
+router.get("/:courseId/obe/crr/download", ...teacherOnly, downloadCourseReviewReport);
 // ===================================================
 // ✅ ATTENDANCE SUMMARY
 // ===================================================

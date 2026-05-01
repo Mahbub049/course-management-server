@@ -208,16 +208,18 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
     const currentTotal = labNow + midNow + finalNow + attNow;
     const maxPossible = labFull + midFull + finalFull + attFull;
 
-    const grade = getGradeFromTotal(currentTotal);
+    const roundedTotal = round2(roundPolicyTotal(currentTotal));
+    const grade = getGradeFromTotal(roundedTotal);
+
     const A_PLUS = 80;
     const neededForAPlus =
-      currentTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - currentTotal);
+      roundedTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - roundedTotal);
 
     return {
-      currentTotal: round2(roundPolicyTotal(currentTotal)),
+      currentTotal: roundedTotal,
       maxPossible: round2(maxPossible),
       grade,
-      totalObtained: round2(roundPolicyTotal(currentTotal)),
+      totalObtained: roundedTotal,
       ctMain: round2(roundPolicyTotal(labNow)),
       labMain: round2(roundPolicyTotal(labNow)),
       aPlusNeeded: round2(neededForAPlus),
@@ -309,16 +311,18 @@ const computeSummaryForStudent = (course, assessments, marksByAssessment) => {
   const currentTotal = ctNow + midNow + finalNow + attNow + assignPresNow;
   const maxPossible = ctFull + midFull + finalFull + attFull + assignPresFull;
 
-  const grade = getGradeFromTotal(currentTotal);
+  const roundedTotal = round2(roundPolicyTotal(currentTotal));
+  const grade = getGradeFromTotal(roundedTotal);
+
   const A_PLUS = 80;
   const neededForAPlus =
-    currentTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - currentTotal);
+    roundedTotal >= A_PLUS ? 0 : Math.max(0, A_PLUS - roundedTotal);
 
   return {
-    currentTotal: round2(roundPolicyTotal(currentTotal)),
+    currentTotal: roundedTotal,
     maxPossible: round2(maxPossible),
     grade,
-    totalObtained: round2(roundPolicyTotal(currentTotal)),
+    totalObtained: roundedTotal,
     ctMain: round2(roundPolicyTotal(ctNow)),
     aPlusNeeded: round2(neededForAPlus),
     aPlusInfo: {
