@@ -48,11 +48,11 @@ const isIncompleteMark = (markDoc) => {
 const round2 = (x) => Math.round(Number(x || 0) * 100) / 100;
 
 const roundPolicyTotal = (total) => {
-  return total % 1 === 0
-    ? total
-    : total % 1 <= 0.5
-      ? Math.floor(total) + 0.5
-      : Math.ceil(total);
+  const n = Number(total || 0);
+
+  if (!Number.isFinite(n) || n <= 0) return 0;
+
+  return Math.ceil((n - 1e-9) * 2) / 2;
 };
 
 const normalizeCtPolicy = (course) => {
@@ -89,6 +89,19 @@ const isCtAssessment = (nameRaw) => {
   if (n.includes('test')) return true;
 
   return false;
+};
+
+const isRegularLabAssessment = (assessment) => {
+  const name = lower(assessment?.name);
+
+  return (
+    assessment?.structureType !== 'lab_final' &&
+    assessment?.structureType !== 'lab_submission' &&
+    !name.includes('mid') &&
+    !name.includes('final') &&
+    !name.includes('att') &&
+    !name.includes('attendance')
+  );
 };
 
 const computeCtContributionByPolicy = (course, entries) => {
@@ -162,8 +175,10 @@ const computeSummaryForStudent = (
   if (courseType === 'lab') {
     const regularLabAssessments = assessments.filter((a) => {
       const name = lower(a.name);
+
       return (
         a?.structureType !== 'lab_final' &&
+        a?.structureType !== 'lab_submission' &&
         !name.includes('mid') &&
         !name.includes('final') &&
         !name.includes('att') &&
@@ -192,26 +207,35 @@ const computeSummaryForStudent = (
       return name.includes('att') || name.includes('attendance');
     });
 
-    const regularLabPctsNow = regularLabAssessments.map((a) =>
-      getPct(a._id.toString(), a.fullMarks)
+    const getCappedMark = (assessmentId, fullMarks) => {
+      const full = Number(fullMarks || 0);
+      const mark = marksByAssessment[assessmentId];
+
+      if (full <= 0 || mark == null || Number.isNaN(Number(mark))) {
+        return 0;
+      }
+
+      return Math.max(0, Math.min(Number(mark), full));
+    };
+
+    const labTotalFullMarks = regularLabAssessments.reduce(
+      (sum, assessment) => sum + Number(assessment.fullMarks || 0),
+      0
     );
 
-    const regularLabPctsFull = regularLabAssessments.map(() => 1);
+    const labTotalObtainedMarks = regularLabAssessments.reduce((sum, assessment) => {
+      const id = assessment._id.toString();
+      return sum + getCappedMark(id, assessment.fullMarks);
+    }, 0);
 
-    const avgNow =
-      regularLabPctsNow.length > 0
-        ? regularLabPctsNow.reduce((s, p) => s + p, 0) /
-        regularLabPctsNow.length
+    const labNow =
+      labTotalFullMarks > 0
+        ? (labTotalObtainedMarks / labTotalFullMarks) * 25
         : 0;
 
-    const avgFull =
-      regularLabPctsFull.length > 0
-        ? regularLabPctsFull.reduce((s, p) => s + p, 0) /
-        regularLabPctsFull.length
-        : 0;
+    const labScore25 = roundPolicyTotal(labNow);
 
-    const labNow = avgNow * 25;
-    const labFull = avgFull * 25;
+    const labFull = labTotalFullMarks > 0 ? 25 : 0;
 
     const midNow = midAssessment
       ? getPct(midAssessment._id.toString(), midAssessment.fullMarks) * 30
@@ -231,7 +255,7 @@ const computeSummaryForStudent = (
       : 0;
     const attFull = attendanceAssessment ? 5 : 0;
 
-    const currentTotal = labNow + midNow + finalNow + attNow;
+    const currentTotal = labScore25 + midNow + finalNow + attNow;
     const maxPossible = labFull + midFull + finalFull + attFull;
 
     const roundedTotal = round2(roundPolicyTotal(currentTotal));
@@ -248,8 +272,8 @@ const computeSummaryForStudent = (
       maxPossible: round2(maxPossible),
       grade,
       totalObtained: roundedTotal,
-      ctMain: round2(roundPolicyTotal(labNow)),
-      labMain: round2(roundPolicyTotal(labNow)),
+      ctMain: round2(labScore25),
+      labMain: round2(labScore25),
       aPlusNeeded: round2(neededForAPlus),
       aPlusInfo: {
         needed: round2(neededForAPlus),
