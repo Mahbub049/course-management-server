@@ -68,11 +68,51 @@ const sanitizeClassTestPolicy = (raw = {}) => {
   };
 };
 
+const sanitizeComplaintSettings = (raw = {}, existing = {}) => {
+  const allowStudentComplaints =
+    raw?.allowStudentComplaints === undefined
+      ? existing?.allowStudentComplaints !== false
+      : !(raw?.allowStudentComplaints === false || raw?.allowStudentComplaints === "false");
+
+  const fallbackMessage =
+    existing?.closedMessage ||
+    "Complaint submission is currently closed by the course teacher.";
+
+  const closedMessage =
+    typeof raw?.closedMessage === "string" && raw.closedMessage.trim()
+      ? raw.closedMessage.trim()
+      : fallbackMessage;
+
+  return {
+    allowStudentComplaints,
+    closedMessage,
+    updatedAt: new Date(),
+  };
+};
+
+const formatComplaintSettings = (course) => ({
+  allowStudentComplaints:
+    course?.complaintSettings?.allowStudentComplaints !== false,
+  closedMessage:
+    course?.complaintSettings?.closedMessage ||
+    "Complaint submission is currently closed by the course teacher.",
+  updatedAt: course?.complaintSettings?.updatedAt || null,
+});
+
 // POST /api/courses  (teacher only)
 const createCourse = async (req, res) => {
   try {
     const teacherId = req.user.userId;
-    const { code, title, section, semester, year, courseType, projectFeature } = req.body;
+    const {
+      code,
+      title,
+      section,
+      semester,
+      year,
+      courseType,
+      projectFeature,
+      complaintSettings,
+    } = req.body;
 
     if (!code || !title || !section || !semester || !year) {
       return res
@@ -93,6 +133,10 @@ const createCourse = async (req, res) => {
       courseType: normalizedType,
       createdBy: teacherId,
       projectFeature: sanitizeProjectFeature(projectFeature),
+      complaintSettings:
+        complaintSettings !== undefined
+          ? sanitizeComplaintSettings(complaintSettings)
+          : undefined,
     });
 
     await course.save();
@@ -106,6 +150,7 @@ const createCourse = async (req, res) => {
       semester: course.semester,
       year: course.year,
       courseType: course.courseType,
+      complaintSettings: formatComplaintSettings(course),
     });
   } catch (err) {
     console.error('Create course error', err);
@@ -146,6 +191,7 @@ const getCourses = async (req, res) => {
       year: c.year,
       courseType: c.courseType,
       archived: c.archived ?? false,
+      complaintSettings: formatComplaintSettings(c),
     }));
 
     res.json(formatted);
@@ -189,6 +235,7 @@ const updateCourse = async (req, res) => {
       archived,
       classTestPolicy,
       projectFeature,
+      complaintSettings,
     } = req.body;
 
     // ✅ build update dynamically (avoid undefined overwrite)
@@ -209,6 +256,20 @@ const updateCourse = async (req, res) => {
 
     if (projectFeature !== undefined) {
       update.projectFeature = sanitizeProjectFeature(projectFeature);
+    }
+
+    if (complaintSettings !== undefined) {
+      const existingCourse = await Course.findOne({ _id: id, createdBy: teacherId })
+        .select("complaintSettings");
+
+      if (!existingCourse) {
+        return res.status(404).json({ message: "Course not found" });
+      }
+
+      update.complaintSettings = sanitizeComplaintSettings(
+        complaintSettings,
+        existingCourse.complaintSettings || {}
+      );
     }
 
     if (archived !== undefined) {

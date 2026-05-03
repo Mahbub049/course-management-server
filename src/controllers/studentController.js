@@ -55,6 +55,15 @@ const roundPolicyTotal = (total) => {
   return Math.ceil((n - 1e-9) * 2) / 2;
 };
 
+const formatComplaintSettings = (course) => ({
+  allowStudentComplaints:
+    course?.complaintSettings?.allowStudentComplaints !== false,
+  closedMessage:
+    course?.complaintSettings?.closedMessage ||
+    "Complaint submission is currently closed by the course teacher.",
+  updatedAt: course?.complaintSettings?.updatedAt || null,
+});
+
 const normalizeCtPolicy = (course) => {
   const raw = course?.classTestPolicy || {};
 
@@ -518,6 +527,7 @@ const getStudentCourses = async (req, res) => {
         semester: course.semester,
         year: course.year,
         courseType: course.courseType,
+        complaintSettings: formatComplaintSettings(course),
         summaryStatus,
         summary,
         pendingSubmissionAssessments: submissionAssessments,
@@ -618,6 +628,7 @@ const getStudentCourseDetails = async (req, res) => {
         semester: course.semester,
         year: course.year,
         courseType: course.courseType,
+        complaintSettings: formatComplaintSettings(course),
         projectFeature: {
           mode: course?.projectFeature?.mode || "lab_final",
           totalProjectMarks: Number(course?.projectFeature?.totalProjectMarks || 40),

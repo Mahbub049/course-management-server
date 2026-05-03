@@ -28,6 +28,25 @@ const projectFeatureSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const complaintSettingsSchema = new mongoose.Schema(
+  {
+    allowStudentComplaints: {
+      type: Boolean,
+      default: true,
+    },
+    closedMessage: {
+      type: String,
+      trim: true,
+      default: "Complaint submission is currently closed by the course teacher.",
+    },
+    updatedAt: {
+      type: Date,
+      default: null,
+    },
+  },
+  { _id: false }
+);
+
 const courseSchema = new mongoose.Schema(
   {
     code: {
@@ -55,6 +74,11 @@ const courseSchema = new mongoose.Schema(
 
     projectFeature: {
       type: projectFeatureSchema,
+      default: () => ({}),
+    },
+
+    complaintSettings: {
+      type: complaintSettingsSchema,
       default: () => ({}),
     },
 

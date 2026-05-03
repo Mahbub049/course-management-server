@@ -43,6 +43,22 @@ const createStudentComplaint = async (req, res) => {
       return res.status(400).json({ message: "courseId and message are required" });
     }
 
+    const courseDoc = await Course.findById(courseId).select(
+      "createdBy archived complaintSettings"
+    );
+
+    if (!courseDoc || courseDoc.archived === true) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    if (courseDoc?.complaintSettings?.allowStudentComplaints === false) {
+      return res.status(403).json({
+        message:
+          courseDoc.complaintSettings.closedMessage ||
+          "Complaint submission is currently closed by the course teacher.",
+      });
+    }
+
     const allowedCategories = ["marks", "attendance", "general"];
     if (!allowedCategories.includes(category)) {
       return res.status(400).json({ message: "Invalid category" });
@@ -87,7 +103,6 @@ const createStudentComplaint = async (req, res) => {
 
     // 2) Fallback: use Course.createdBy
     if (!teacherId) {
-      const courseDoc = await Course.findById(courseId).select("createdBy");
       if (courseDoc?.createdBy) teacherId = courseDoc.createdBy;
     }
 
