@@ -10,6 +10,14 @@ function round2(num) {
   return Math.round(Number(num || 0) * 100) / 100;
 }
 
+function isHalfStepMark(value) {
+  const n = Number(value);
+
+  if (!Number.isFinite(n) || n < 0) return false;
+
+  return Math.abs(n * 2 - Math.round(n * 2)) < 1e-9;
+}
+
 function sumSubMarks(subMarks = []) {
   return round2(
     (subMarks || []).reduce(
@@ -116,6 +124,37 @@ const saveMarksForCourse = async (req, res) => {
         };
       })
       .filter(Boolean);
+
+    const invalidMark = cleaned.find((m) => {
+      if (!isHalfStepMark(m.obtainedMarks)) return true;
+
+      return (m.subMarks || []).some(
+        (item) => !isHalfStepMark(item.obtainedMarks)
+      );
+    });
+
+    if (invalidMark) {
+      return res.status(400).json({
+        message: "Marks must be whole numbers or .5 values only.",
+      });
+    }
+
+        const overFullMark = cleaned.find((m) => {
+      const assessment = assessmentMap.get(String(m.assessmentId));
+      const fullMarks = Number(assessment?.fullMarks || 0);
+
+      if (fullMarks > 0 && Number(m.obtainedMarks || 0) > fullMarks) {
+        return true;
+      }
+
+      return false;
+    });
+
+    if (overFullMark) {
+      return res.status(400).json({
+        message: "Marks cannot be greater than assessment full marks.",
+      });
+    }
 
     const bulkOps = cleaned.map((m) => ({
       updateOne: {
