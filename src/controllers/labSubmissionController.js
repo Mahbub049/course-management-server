@@ -33,6 +33,24 @@ function getValidDate(value) {
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
+function normalizeResourceUrl(value) {
+  const url = String(value || '').trim();
+  if (!url) return '';
+
+  try {
+    const parsed = new URL(url);
+    if (!['http:', 'https:'].includes(parsed.protocol)) return '';
+    return parsed.toString();
+  } catch (_err) {
+    return '';
+  }
+}
+
+function normalizeResourceTitle(value) {
+  const title = String(value || '').trim();
+  return title || 'View Resource';
+}
+
 function hasSubmissionDueDatePassed(cfg = {}) {
   const dueDate = getValidDate(cfg?.dueDate);
   if (!dueDate) return false;
@@ -71,6 +89,8 @@ function normalizeSubmissionAssessment(a) {
       ? cfg.allowedExtensions
       : DEFAULT_ALLOWED_EXTENSIONS,
     allowResubmission: cfg.allowResubmission !== false,
+    resourceTitle: cfg.resourceUrl ? normalizeResourceTitle(cfg.resourceTitle) : '',
+    resourceUrl: normalizeResourceUrl(cfg.resourceUrl),
     isVisibleToStudents: !!cfg.isVisibleToStudents,
     visibleAt: cfg.visibleAt || null,
     submissionsOpen,
@@ -147,6 +167,10 @@ const createTeacherSubmissionAssessment = async (req, res) => {
           : DEFAULT_ALLOWED_EXTENSIONS,
         maxFileSizeMB: Number(submissionConfig.maxFileSizeMB || 10),
         allowResubmission: submissionConfig.allowResubmission !== false,
+        resourceTitle: normalizeResourceUrl(submissionConfig.resourceUrl)
+          ? normalizeResourceTitle(submissionConfig.resourceTitle)
+          : '',
+        resourceUrl: normalizeResourceUrl(submissionConfig.resourceUrl),
         isVisibleToStudents: false,
         visibleAt: null,
         submissionsOpen: true,
@@ -271,6 +295,14 @@ const updateTeacherSubmissionAssessment = async (req, res) => {
       if (payload.allowResubmission != null) {
         assessment.submissionConfig.allowResubmission =
           payload.allowResubmission !== false;
+      }
+
+      if (payload.resourceUrl != null || payload.resourceTitle != null) {
+        const normalizedUrl = normalizeResourceUrl(payload.resourceUrl);
+        assessment.submissionConfig.resourceUrl = normalizedUrl;
+        assessment.submissionConfig.resourceTitle = normalizedUrl
+          ? normalizeResourceTitle(payload.resourceTitle)
+          : '';
       }
     } else {
       return res.status(400).json({ message: 'Invalid action.' });

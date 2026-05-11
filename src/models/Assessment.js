@@ -142,6 +142,16 @@ const submissionConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    resourceTitle: {
+      type: String,
+      default: '',
+      trim: true,
+    },
+    resourceUrl: {
+      type: String,
+      default: '',
+      trim: true,
+    },
 
     isVisibleToStudents: {
       type: Boolean,
