@@ -17,7 +17,33 @@ const DEFAULT_ALLOWED_EXTENSIONS = [
   'xlsx',
   'ppt',
   'pptx',
+  'txt',
 ];
+
+
+function normalizeAllowedExtensions(value) {
+  if (!Array.isArray(value)) {
+    return DEFAULT_ALLOWED_EXTENSIONS;
+  }
+
+  const cleaned = value
+    .map((item) => String(item || '').trim().toLowerCase().replace(/^\./, ''))
+    .filter((item) => DEFAULT_ALLOWED_EXTENSIONS.includes(item));
+
+  const unique = Array.from(new Set(cleaned));
+  return unique.length ? unique : DEFAULT_ALLOWED_EXTENSIONS;
+}
+
+function getFileExtension(fileName = '') {
+  const ext = path.extname(fileName || '').toLowerCase().replace(/^\./, '');
+  return ext;
+}
+
+function formatAllowedExtensions(value) {
+  return normalizeAllowedExtensions(value)
+    .map((item) => item.toUpperCase())
+    .join(', ');
+}
 
 const {
   buildSubmissionStoragePath,
@@ -85,9 +111,7 @@ function normalizeSubmissionAssessment(a) {
     dueDate: cfg.dueDate || null,
     instructions: cfg.instructions || '',
     maxFileSizeMB: Number(cfg.maxFileSizeMB || 10),
-    allowedExtensions: Array.isArray(cfg.allowedExtensions)
-      ? cfg.allowedExtensions
-      : DEFAULT_ALLOWED_EXTENSIONS,
+    allowedExtensions: normalizeAllowedExtensions(cfg.allowedExtensions),
     allowResubmission: cfg.allowResubmission !== false,
     resourceTitle: cfg.resourceUrl ? normalizeResourceTitle(cfg.resourceTitle) : '',
     resourceUrl: normalizeResourceUrl(cfg.resourceUrl),
@@ -162,9 +186,7 @@ const createTeacherSubmissionAssessment = async (req, res) => {
       submissionConfig: {
         instructions: String(submissionConfig.instructions || '').trim(),
         dueDate: submissionConfig.dueDate || null,
-        allowedExtensions: Array.isArray(submissionConfig.allowedExtensions)
-          ? submissionConfig.allowedExtensions
-          : DEFAULT_ALLOWED_EXTENSIONS,
+        allowedExtensions: normalizeAllowedExtensions(submissionConfig.allowedExtensions),
         maxFileSizeMB: Number(submissionConfig.maxFileSizeMB || 10),
         allowResubmission: submissionConfig.allowResubmission !== false,
         resourceTitle: normalizeResourceUrl(submissionConfig.resourceUrl)
@@ -295,6 +317,12 @@ const updateTeacherSubmissionAssessment = async (req, res) => {
       if (payload.allowResubmission != null) {
         assessment.submissionConfig.allowResubmission =
           payload.allowResubmission !== false;
+      }
+
+      if (payload.allowedExtensions != null) {
+        assessment.submissionConfig.allowedExtensions = normalizeAllowedExtensions(
+          payload.allowedExtensions
+        );
       }
 
       if (payload.resourceUrl != null || payload.resourceTitle != null) {
@@ -976,6 +1004,24 @@ if (!isSubmissionCurrentlyOpen(cfg)) {
       : 'Submission is currently closed for this task.',
   });
 }
+
+    const allowedExtensions = normalizeAllowedExtensions(cfg.allowedExtensions);
+    const uploadedExt = getFileExtension(file.originalname);
+
+    if (!allowedExtensions.includes(uploadedExt)) {
+      return res.status(400).json({
+        message: `Invalid file type. Only ${formatAllowedExtensions(allowedExtensions)} files are allowed for this task.`,
+      });
+    }
+
+    const maxFileSizeMB = Number(cfg.maxFileSizeMB || 10);
+    const maxFileSizeBytes = maxFileSizeMB * 1024 * 1024;
+
+    if (Number(file.size || 0) > maxFileSizeBytes) {
+      return res.status(400).json({
+        message: `File size must be less than or equal to ${maxFileSizeMB} MB.`,
+      });
+    }
 
     const enrollment = await ensureStudentEnrollment(assessment.course, studentId);
     if (!enrollment || !enrollment.course || enrollment.course.archived === true) {

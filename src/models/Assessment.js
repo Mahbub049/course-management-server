@@ -131,7 +131,7 @@ const submissionConfigSchema = new mongoose.Schema(
     },
     allowedExtensions: {
       type: [String],
-      default: ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx'],
+      default: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip'],
     },
     maxFileSizeMB: {
       type: Number,
