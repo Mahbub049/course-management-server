@@ -13,6 +13,7 @@ const attendanceRoutes = require('./routes/attendanceRoutes');
 const startKeepAlive = require('./utils/keepAlive');
 const projectFormRoutes = require('./routes/projectFormRoutes');
 const labSubmissionRoutes = require('./routes/labSubmissionRoutes');
+const routineRoutes = require('./routes/routineRoutes');
 
 const app = express();
 
@@ -51,6 +52,7 @@ app.use('/api/complaints', complaintRoute);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/project-form', projectFormRoutes);
 app.use('/api/lab-submissions', labSubmissionRoutes);
+app.use('/api/routine', routineRoutes);
 
 const PORT = process.env.PORT || 5000;
 
