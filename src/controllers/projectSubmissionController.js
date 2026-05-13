@@ -115,6 +115,37 @@ const getLateStatus = (dueDate, submittedAt) => {
   return sub.getTime() > due.getTime();
 };
 
+const getDueTime = (dueDate) => {
+  if (!dueDate) return null;
+  const due = new Date(dueDate).getTime();
+  return Number.isNaN(due) ? null : due;
+};
+
+const hasProjectPhaseDeadlinePassed = (phase, now = Date.now()) => {
+  const dueTime = getDueTime(phase?.dueDate);
+  if (!dueTime) return false;
+  return dueTime <= now;
+};
+
+const formatPhaseForStudent = (phase, extra = {}) => {
+  const deadlinePassed = hasProjectPhaseDeadlinePassed(phase);
+
+  return {
+    id: String(phase._id),
+    title: phase.title || "",
+    instructions: phase.instructions || "",
+    phaseType: phase.phaseType || "group",
+    dueDate: phase.dueDate,
+    totalMarks: Number(phase.totalMarks || 0),
+    order: Number(phase.order || 0),
+    isVisibleToStudents: phase.isVisibleToStudents !== false,
+    resourceLinks: Array.isArray(phase.resourceLinks) ? phase.resourceLinks : [],
+    deadlinePassed,
+    submissionsOpen: !deadlinePassed,
+    ...extra,
+  };
+};
+
 const getStudentGroupForCourse = async (studentId, courseId) => {
   return ProjectGroup.findOne({
     course: courseId,
@@ -312,20 +343,12 @@ const getStudentProjectSubmissions = async (req, res) => {
 
     const result = phases.map((phase) => {
       const submission = submissionMap.get(String(phase._id));
-      const canSubmit = phase.phaseType === "group" ? Boolean(myGroup) : true;
+      const deadlinePassed = hasProjectPhaseDeadlinePassed(phase);
+      const hasRequiredTarget = phase.phaseType === "group" ? Boolean(myGroup) : true;
+      const canSubmit = hasRequiredTarget && !deadlinePassed;
 
       return {
-        phase: {
-          id: String(phase._id),
-          title: phase.title || "",
-          instructions: phase.instructions || "",
-          phaseType: phase.phaseType || "group",
-          dueDate: phase.dueDate,
-          totalMarks: Number(phase.totalMarks || 0),
-          order: Number(phase.order || 0),
-          isVisibleToStudents: phase.isVisibleToStudents !== false,
-          resourceLinks: Array.isArray(phase.resourceLinks) ? phase.resourceLinks : [],
-        },
+        phase: formatPhaseForStudent(phase),
         submission: submission
           ? formatSubmission(submission, {
               isLate: getLateStatus(phase.dueDate, submission.submittedAt),
@@ -364,12 +387,6 @@ const submitStudentProjectPhase = async (req, res) => {
 
     await ensureStudentAccess(studentId, courseId);
 
-    if (!link && !req.file) {
-      return res.status(400).json({
-        message: "Please provide submission link or upload a file",
-      });
-    }
-
     const phase = await ProjectPhase.findOne({
       _id: phaseId,
       course: courseId,
@@ -378,6 +395,18 @@ const submitStudentProjectPhase = async (req, res) => {
 
     if (!phase) {
       return res.status(404).json({ message: "Project phase not found" });
+    }
+
+    if (hasProjectPhaseDeadlinePassed(phase)) {
+      return res.status(400).json({
+        message: "Submission deadline has passed. You can no longer submit or update this phase.",
+      });
+    }
+
+    if (!link && !req.file) {
+      return res.status(400).json({
+        message: "Please provide submission link or upload a file",
+      });
     }
 
     const submissionType = phase.phaseType;
@@ -603,6 +632,111 @@ const submitStudentProjectPhase = async (req, res) => {
   }
 };
 
+const getStudentPendingProjectSubmissions = async (req, res) => {
+  try {
+    const studentId = req.user.userId;
+
+    const enrollments = await Enrollment.find({ student: studentId }).populate("course");
+
+    const projectCourses = enrollments
+      .map((item) => item.course)
+      .filter(
+        (course) =>
+          course &&
+          course.archived !== true &&
+          course.projectFeature?.mode === "project" &&
+          course.projectFeature?.visibleToStudents !== false
+      );
+
+    const courseIds = projectCourses.map((course) => course._id);
+
+    if (courseIds.length === 0) {
+      return res.json([]);
+    }
+
+    const [phases, groups] = await Promise.all([
+      ProjectPhase.find({
+        course: { $in: courseIds },
+        isVisibleToStudents: true,
+      }).sort({ dueDate: 1, order: 1, createdAt: 1 }),
+      ProjectGroup.find({
+        course: { $in: courseIds },
+        members: studentId,
+      }),
+    ]);
+
+    const phaseIds = phases.map((phase) => phase._id);
+    const groupIds = groups.map((group) => group._id);
+
+    const submissions = await ProjectSubmission.find({
+      course: { $in: courseIds },
+      phase: { $in: phaseIds },
+      $or: [{ student: studentId }, ...(groupIds.length ? [{ group: { $in: groupIds } }] : [])],
+    });
+
+    const courseMap = new Map(projectCourses.map((course) => [String(course._id), course]));
+    const groupByCourse = new Map(groups.map((group) => [String(group.course), group]));
+    const submissionByPhase = new Map(
+      submissions.map((submission) => [String(submission.phase), submission])
+    );
+
+    const now = Date.now();
+
+    const result = phases
+      .map((phase) => {
+        const course = courseMap.get(String(phase.course));
+        const myGroup = groupByCourse.get(String(phase.course));
+        const submission = submissionByPhase.get(String(phase._id));
+        const deadlinePassed = hasProjectPhaseDeadlinePassed(phase, now);
+        const hasRequiredTarget = phase.phaseType === "group" ? Boolean(myGroup) : true;
+
+        return {
+          id: String(phase._id),
+          phaseId: String(phase._id),
+          taskType: "project_phase",
+          name: phase.title || "Project Phase",
+          fullMarks: Number(phase.totalMarks || 0),
+          dueDate: phase.dueDate || null,
+          phaseType: phase.phaseType || "group",
+          submissionLabel:
+            phase.phaseType === "group" ? "Group Project Phase" : "Individual Project Phase",
+          isVisibleToStudents: phase.isVisibleToStudents !== false,
+          submissionsOpen: !deadlinePassed,
+          dueDatePassed: deadlinePassed,
+          canSubmit: hasRequiredTarget && !deadlinePassed,
+          missingGroup: phase.phaseType === "group" && !myGroup,
+          submission: submission
+            ? {
+                id: String(submission._id),
+                submittedAt: submission.submittedAt,
+                lastUpdatedAt: submission.lastUpdatedAt,
+              }
+            : null,
+          course: {
+            id: course?._id?.toString?.() || String(phase.course),
+            code: course?.code || "-",
+            title: course?.title || "-",
+            section: course?.section || "-",
+          },
+        };
+      })
+      .filter((item) => !item.submission && item.isVisibleToStudents && !item.dueDatePassed)
+      .sort((a, b) => {
+        const aDue = getDueTime(a.dueDate) || Number.MAX_SAFE_INTEGER;
+        const bDue = getDueTime(b.dueDate) || Number.MAX_SAFE_INTEGER;
+        if (aDue !== bDue) return aDue - bDue;
+        return String(a.name || "").localeCompare(String(b.name || ""));
+      });
+
+    return res.json(result);
+  } catch (err) {
+    console.error("getStudentPendingProjectSubmissions error:", err);
+    return res.status(err.status || 500).json({
+      message: err.message || "Failed to load pending project submissions.",
+    });
+  }
+};
+
 const getTeacherProjectSubmissions = async (req, res) => {
   try {
     const teacherId = req.user.userId;
@@ -818,6 +952,7 @@ function docHasStoragePath(formattedItem, submissionDoc) {
 
 module.exports = {
   getStudentProjectSubmissions,
+  getStudentPendingProjectSubmissions,
   submitStudentProjectPhase,
   getTeacherProjectSubmissions,
   downloadTeacherProjectSubmissionZip,

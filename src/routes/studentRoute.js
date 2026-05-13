@@ -25,6 +25,7 @@ const {
 
 const {
   getStudentProjectSubmissions,
+  getStudentPendingProjectSubmissions,
   submitStudentProjectPhase,
 } = require("../controllers/projectSubmissionController");
 
@@ -54,6 +55,8 @@ router.post("/courses/:courseId/project-groups", createStudentProjectGroup);
 router.put("/courses/:courseId/project-info", updateStudentProjectInfo);
 
 router.get("/courses/:courseId/project-phases", getStudentProjectPhases);
+
+router.get("/project-submissions/pending", getStudentPendingProjectSubmissions);
 
 router.get("/courses/:courseId/project-submissions", getStudentProjectSubmissions);
 

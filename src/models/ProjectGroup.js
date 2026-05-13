@@ -57,6 +57,12 @@ const projectGroupSchema = new mongoose.Schema(
       default: "",
     },
 
+    additionalNote: {
+      type: String,
+      trim: true,
+      default: "",
+    },
+
     note: {
       type: String,
       trim: true,

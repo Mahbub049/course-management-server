@@ -72,6 +72,16 @@ const normalizeIds = (arr = []) => {
 
 const cleanString = (value) => String(value || "").trim();
 
+const PROJECT_INFO_KEYS = [
+  "groupName",
+  "projectTitle",
+  "projectSummary",
+  "driveLink",
+  "repositoryLink",
+  "contactEmail",
+  "additionalNote",
+];
+
 const mergeProjectFields = (rawFields = {}) => {
   const merged = {};
 
@@ -98,15 +108,17 @@ const mergeProjectFields = (rawFields = {}) => {
   return merged;
 };
 
-const getProjectInfoFromBody = (body = {}) => ({
-  groupName: cleanString(body.groupName),
-  projectTitle: cleanString(body.projectTitle),
-  projectSummary: cleanString(body.projectSummary),
-  driveLink: cleanString(body.driveLink),
-  repositoryLink: cleanString(body.repositoryLink),
-  contactEmail: cleanString(body.contactEmail),
-  additionalNote: cleanString(body.additionalNote),
-});
+const getProjectInfoFromBody = (body = {}, { includeMissing = false } = {}) => {
+  const info = {};
+
+  PROJECT_INFO_KEYS.forEach((key) => {
+    if (includeMissing || Object.prototype.hasOwnProperty.call(body, key)) {
+      info[key] = cleanString(body[key]);
+    }
+  });
+
+  return info;
+};
 
 const applyProjectInfoToGroup = (group, info) => {
   if (info.groupName !== undefined) group.groupName = info.groupName;
@@ -208,6 +220,7 @@ const formatGroup = (group) => ({
   repositoryLink: group.repositoryLink || "",
   contactEmail: group.contactEmail || "",
   additionalNote: group.additionalNote || "",
+  note: group.note || "",
   createdByRole: group.createdByRole || "student",
   leader: group.leader
     ? {
@@ -312,7 +325,7 @@ const createTeacherProjectGroup = async (req, res) => {
     const teacherId = req.user.userId;
     const { courseId } = req.params;
     const { leaderId, memberIds = [] } = req.body;
-    const info = getProjectInfoFromBody(req.body);
+    const info = getProjectInfoFromBody(req.body, { includeMissing: true });
 
     const course = await ensureTeacherCourseAccess(teacherId, courseId);
     validateProjectMode(course);
@@ -357,7 +370,7 @@ const updateTeacherProjectGroup = async (req, res) => {
     const teacherId = req.user.userId;
     const { courseId, groupId } = req.params;
     const { leaderId, memberIds = [] } = req.body;
-    const info = getProjectInfoFromBody(req.body);
+    const info = getProjectInfoFromBody(req.body, { includeMissing: false });
 
     const course = await ensureTeacherCourseAccess(teacherId, courseId);
     validateProjectMode(course);
@@ -499,15 +512,7 @@ const createStudentProjectGroup = async (req, res) => {
 
     const configFields = await getProjectFormFields(courseId);
 
-    const info = {
-      groupName: cleanString(req.body.groupName),
-      projectTitle: cleanString(req.body.projectTitle),
-      projectSummary: "",
-      driveLink: "",
-      repositoryLink: "",
-      contactEmail: "",
-      additionalNote: "",
-    };
+    const info = getProjectInfoFromBody(req.body, { includeMissing: true });
 
     validateRequiredFields(info, configFields, "groupCreate");
 
