@@ -14,6 +14,7 @@ const startKeepAlive = require('./utils/keepAlive');
 const projectFormRoutes = require('./routes/projectFormRoutes');
 const labSubmissionRoutes = require('./routes/labSubmissionRoutes');
 const routineRoutes = require('./routes/routineRoutes');
+const academicCalendarRoutes = require("./routes/academicCalendarRoutes");
 
 const app = express();
 
@@ -53,6 +54,7 @@ app.use('/api/attendance', attendanceRoutes);
 app.use('/api/project-form', projectFormRoutes);
 app.use('/api/lab-submissions', labSubmissionRoutes);
 app.use('/api/routine', routineRoutes);
+app.use("/api/academic-calendar", academicCalendarRoutes);
 
 const PORT = process.env.PORT || 5000;
 
