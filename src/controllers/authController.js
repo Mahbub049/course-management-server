@@ -1,17 +1,18 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
-const generateToken = (user) => {
+const generateToken = (user, rememberMe = false) => {
   return jwt.sign(
     {
       id: user._id,
       role: user.role,
     },
     process.env.JWT_SECRET,
-    { expiresIn: "7d" }
+    {
+      expiresIn: rememberMe ? "30d" : "1d",
+    }
   );
 };
-
 async function uploadBase64ToImgbb(base64String, fileName = "profile") {
   if (!process.env.IMGBB_API_KEY) {
     throw new Error("IMGBB_API_KEY is missing in server environment");
@@ -50,7 +51,7 @@ async function uploadBase64ToImgbb(base64String, fileName = "profile") {
 // POST /api/auth/login
 const login = async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, password, rememberMe } = req.body;
 
     if (!username || !password) {
       return res
@@ -64,7 +65,7 @@ const login = async (req, res) => {
     const valid = await user.validatePassword(password);
     if (!valid) return res.status(401).json({ message: "Invalid credentials" });
 
-    const token = generateToken(user);
+    const token = generateToken(user, rememberMe);
 
     res.json({
       token,
