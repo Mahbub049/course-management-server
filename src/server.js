@@ -18,25 +18,35 @@ const academicCalendarRoutes = require("./routes/academicCalendarRoutes");
 
 const app = express();
 
-app.use(
-  cors({
-    origin: function (origin, callback) {
-      const allowedOrigins = [
-        'http://localhost:5173',
-        'https://course-management-client-puce.vercel.app',
-        'https://bubt-courses.vercel.app',
-      ];
+const allowedOrigins = [
+  'http://localhost:5173',
+  'https://course-management-client-puce.vercel.app',
+  'https://bubt-courses.vercel.app',
 
-      if (!origin) return callback(null, true);
-      if (allowedOrigins.includes(origin)) return callback(null, true);
+  // Firebase alternate frontend
+  'https://bubt-courses.web.app',
+  'https://bubt-courses.firebaseapp.com',
+];
 
-      return callback(new Error('Not allowed by CORS'));
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
-  })
-);
+const corsOptions = {
+  origin: function (origin, callback) {
+    if (!origin) {
+      return callback(null, true);
+    }
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Not allowed by CORS: ${origin}`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
 
 app.options(/.*/, cors());
 
