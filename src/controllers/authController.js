@@ -1,5 +1,11 @@
+const crypto = require("crypto");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
+const { sendMail } = require("../utils/mailer");
+
+const OTP_EXPIRY_MINUTES = 10;
+const RESET_VERIFIED_EXPIRY_MINUTES = 10;
+const MAX_OTP_ATTEMPTS = 5;
 
 const generateToken = (user, rememberMe = false) => {
   return jwt.sign(
@@ -13,6 +19,53 @@ const generateToken = (user, rememberMe = false) => {
     }
   );
 };
+
+const normalizeText = (value) => {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, " ");
+};
+
+const normalizeEmail = (value) => {
+  return String(value || "").trim().toLowerCase();
+};
+
+const isValidEmail = (email) => {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+};
+
+const generateOtp = () => {
+  return String(Math.floor(100000 + Math.random() * 900000));
+};
+
+const hashOtp = (otp, userId) => {
+  return crypto
+    .createHash("sha256")
+    .update(`${otp}.${userId}.${process.env.JWT_SECRET}`)
+    .digest("hex");
+};
+
+const buildOtpEmailHtml = ({ name, otp }) => {
+  return `
+    <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #111827;">
+      <h2>Password Reset OTP</h2>
+
+      <p>Hello ${name || "Student"},</p>
+
+      <p>Your OTP for Course Management System password reset is:</p>
+
+      <div style="font-size: 28px; font-weight: 700; letter-spacing: 6px; background: #f3f4f6; padding: 14px 18px; border-radius: 10px; display: inline-block;">
+        ${otp}
+      </div>
+
+      <p>This OTP will expire in ${OTP_EXPIRY_MINUTES} minutes.</p>
+
+      <p>If you did not request this password reset, please ignore this email.</p>
+    </div>
+  `;
+};
+
 async function uploadBase64ToImgbb(base64String, fileName = "profile") {
   if (!process.env.IMGBB_API_KEY) {
     throw new Error("IMGBB_API_KEY is missing in server environment");
@@ -59,11 +112,17 @@ const login = async (req, res) => {
         .json({ message: "Username and password required" });
     }
 
-    const user = await User.findOne({ username });
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    const user = await User.findOne({ username: String(username).trim() });
+
+    if (!user) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const valid = await user.validatePassword(password);
-    if (!valid) return res.status(401).json({ message: "Invalid credentials" });
+
+    if (!valid) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
 
     const token = generateToken(user, rememberMe);
 
@@ -109,6 +168,7 @@ const registerTeacher = async (req, res) => {
     }
 
     const cleanUsername = String(username).trim();
+    const cleanEmail = normalizeEmail(email);
 
     if (cleanUsername.length < 3) {
       return res.status(400).json({
@@ -123,7 +183,14 @@ const registerTeacher = async (req, res) => {
       });
     }
 
-    const existingEmail = await User.findOne({ email: email.trim() });
+    if (!isValidEmail(cleanEmail)) {
+      return res.status(400).json({
+        message: "Please enter a valid email address.",
+      });
+    }
+
+    const existingEmail = await User.findOne({ email: cleanEmail });
+
     if (existingEmail) {
       return res.status(400).json({
         message: "Email already registered",
@@ -131,6 +198,7 @@ const registerTeacher = async (req, res) => {
     }
 
     const existingUsername = await User.findOne({ username: cleanUsername });
+
     if (existingUsername) {
       return res.status(400).json({
         message: "Username already taken",
@@ -141,7 +209,8 @@ const registerTeacher = async (req, res) => {
       role: "teacher",
       username: cleanUsername,
       name: name.trim(),
-      email: email.trim(),
+      email: cleanEmail,
+      emailVerified: true,
       department: department.trim(),
       designation: designation.trim(),
       joiningDate,
@@ -174,11 +243,16 @@ const changePassword = async (req, res) => {
     }
 
     const user = await User.findById(userId);
-    if (!user) return res.status(404).json({ message: "User not found" });
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found" });
+    }
 
     const isValid = await user.validatePassword(oldPassword);
-    if (!isValid)
+
+    if (!isValid) {
       return res.status(401).json({ message: "Old password is incorrect" });
+    }
 
     await user.setPassword(newPassword);
     user.firstLogin = false;
@@ -268,9 +342,290 @@ const updateProfile = async (req, res) => {
   }
 };
 
+// POST /api/auth/forgot-password/request-otp
+const requestPasswordResetOtp = async (req, res) => {
+  try {
+    const { roll, fullName, email } = req.body;
+
+    if (!roll || !fullName || !email) {
+      return res.status(400).json({
+        message: "Roll, full name and email are required.",
+      });
+    }
+
+    const cleanRoll = String(roll).trim();
+    const cleanName = normalizeText(fullName);
+    const cleanEmail = normalizeEmail(email);
+
+    if (!isValidEmail(cleanEmail)) {
+      return res.status(400).json({
+        message: "Please enter a valid email address.",
+      });
+    }
+
+    const user = await User.findOne({
+      username: cleanRoll,
+      role: "student",
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Student information does not match our records.",
+      });
+    }
+
+    if (normalizeText(user.name) !== cleanName) {
+      return res.status(400).json({
+        message: "Student information does not match our records.",
+      });
+    }
+
+    if (user.email && normalizeEmail(user.email) !== cleanEmail) {
+      return res.status(400).json({
+        message:
+          "This account already has a registered email. Please use the registered email.",
+      });
+    }
+
+    const emailOwner = await User.findOne({
+      email: cleanEmail,
+      _id: { $ne: user._id },
+    });
+
+    if (emailOwner) {
+      return res.status(400).json({
+        message: "This email is already connected to another account.",
+      });
+    }
+
+    const otp = generateOtp();
+
+    user.pendingRecoveryEmail = cleanEmail;
+    user.passwordResetOtpHash = hashOtp(otp, user._id);
+    user.passwordResetOtpExpires = new Date(
+      Date.now() + OTP_EXPIRY_MINUTES * 60 * 1000
+    );
+    user.passwordResetOtpAttempts = 0;
+    user.passwordResetVerified = false;
+    user.passwordResetVerifiedExpires = null;
+
+    await user.save();
+
+    await sendMail({
+      to: cleanEmail,
+      subject: "Password Reset OTP - Course Management System",
+      html: buildOtpEmailHtml({
+        name: user.name,
+        otp,
+      }),
+    });
+
+    return res.json({
+      message: `OTP has been sent to ${cleanEmail}. It will expire in ${OTP_EXPIRY_MINUTES} minutes.`,
+    });
+  } catch (err) {
+    console.error("requestPasswordResetOtp error", err);
+    return res.status(500).json({
+      message: "Failed to send OTP. Please try again later.",
+    });
+  }
+};
+
+const verifyOtpForUser = async (user, otp) => {
+  if (!otp) {
+    return {
+      ok: false,
+      status: 400,
+      message: "OTP is required.",
+    };
+  }
+
+  if (!user.passwordResetOtpHash || !user.passwordResetOtpExpires) {
+    return {
+      ok: false,
+      status: 400,
+      message: "No active OTP found. Please request a new OTP.",
+    };
+  }
+
+  if (new Date(user.passwordResetOtpExpires).getTime() < Date.now()) {
+    return {
+      ok: false,
+      status: 400,
+      message: "OTP has expired. Please request a new OTP.",
+    };
+  }
+
+  if (Number(user.passwordResetOtpAttempts || 0) >= MAX_OTP_ATTEMPTS) {
+    return {
+      ok: false,
+      status: 429,
+      message: "Too many wrong attempts. Please request a new OTP.",
+    };
+  }
+
+  const incomingHash = hashOtp(String(otp).trim(), user._id);
+
+  if (incomingHash !== user.passwordResetOtpHash) {
+    user.passwordResetOtpAttempts = Number(user.passwordResetOtpAttempts || 0) + 1;
+    await user.save();
+
+    return {
+      ok: false,
+      status: 400,
+      message: "Invalid OTP. Please check and try again.",
+    };
+  }
+
+  return {
+    ok: true,
+  };
+};
+
+// POST /api/auth/forgot-password/verify-otp
+const verifyPasswordResetOtp = async (req, res) => {
+  try {
+    const { roll, otp } = req.body;
+
+    if (!roll || !otp) {
+      return res.status(400).json({
+        message: "Roll and OTP are required.",
+      });
+    }
+
+    const user = await User.findOne({
+      username: String(roll).trim(),
+      role: "student",
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid request.",
+      });
+    }
+
+    const result = await verifyOtpForUser(user, otp);
+
+    if (!result.ok) {
+      return res.status(result.status).json({
+        message: result.message,
+      });
+    }
+
+    user.email = user.pendingRecoveryEmail || user.email;
+    user.emailVerified = true;
+    user.passwordResetVerified = true;
+    user.passwordResetVerifiedExpires = new Date(
+      Date.now() + RESET_VERIFIED_EXPIRY_MINUTES * 60 * 1000
+    );
+
+    await user.save();
+
+    return res.json({
+      message: "OTP verified successfully. You can now reset your password.",
+    });
+  } catch (err) {
+    console.error("verifyPasswordResetOtp error", err);
+
+    if (err?.code === 11000) {
+      return res.status(400).json({
+        message: "This email is already connected to another account.",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Failed to verify OTP.",
+    });
+  }
+};
+
+// POST /api/auth/forgot-password/reset
+const resetPasswordWithOtp = async (req, res) => {
+  try {
+    const { roll, otp, newPassword } = req.body;
+
+    if (!roll || !otp || !newPassword) {
+      return res.status(400).json({
+        message: "Roll, OTP and new password are required.",
+      });
+    }
+
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({
+        message: "Password must be at least 6 characters long.",
+      });
+    }
+
+    const user = await User.findOne({
+      username: String(roll).trim(),
+      role: "student",
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "Invalid request.",
+      });
+    }
+
+    if (
+      !user.passwordResetVerified ||
+      !user.passwordResetVerifiedExpires ||
+      new Date(user.passwordResetVerifiedExpires).getTime() < Date.now()
+    ) {
+      return res.status(400).json({
+        message: "OTP verification expired. Please verify OTP again.",
+      });
+    }
+
+    const result = await verifyOtpForUser(user, otp);
+
+    if (!result.ok) {
+      return res.status(result.status).json({
+        message: result.message,
+      });
+    }
+
+    if (user.pendingRecoveryEmail) {
+      user.email = user.pendingRecoveryEmail;
+      user.emailVerified = true;
+    }
+
+    await user.setPassword(newPassword);
+
+    user.firstLogin = false;
+    user.pendingRecoveryEmail = "";
+    user.passwordResetOtpHash = null;
+    user.passwordResetOtpExpires = null;
+    user.passwordResetOtpAttempts = 0;
+    user.passwordResetVerified = false;
+    user.passwordResetVerifiedExpires = null;
+
+    await user.save();
+
+    return res.json({
+      message: "Password reset successful. You can now login.",
+    });
+  } catch (err) {
+    console.error("resetPasswordWithOtp error", err);
+
+    if (err?.code === 11000) {
+      return res.status(400).json({
+        message: "This email is already connected to another account.",
+      });
+    }
+
+    return res.status(500).json({
+      message: "Failed to reset password.",
+    });
+  }
+};
+
 module.exports = {
   login,
   changePassword,
   updateProfile,
   registerTeacher,
+  requestPasswordResetOtp,
+  verifyPasswordResetOtp,
+  resetPasswordWithOtp,
 };

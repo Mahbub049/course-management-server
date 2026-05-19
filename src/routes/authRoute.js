@@ -1,15 +1,29 @@
-const express = require('express');
+const express = require("express");
 const router = express.Router();
-const { login, changePassword, updateProfile, registerTeacher } = require('../controllers/authController');
-const { authMiddleware } = require('../middleware/authMiddleware');
 
-// Login
-router.post('/login', login);
-router.post('/teacher/register', registerTeacher);
+const {
+  login,
+  changePassword,
+  updateProfile,
+  registerTeacher,
+  requestPasswordResetOtp,
+  verifyPasswordResetOtp,
+  resetPasswordWithOtp,
+} = require("../controllers/authController");
 
-// Change password (must be logged in)
-router.post('/change-password', authMiddleware, changePassword);
+const { authMiddleware } = require("../middleware/authMiddleware");
 
-router.put('/profile', authMiddleware, updateProfile);
+// Public routes
+router.post("/login", login);
+router.post("/teacher/register", registerTeacher);
+
+// Forgot password OTP routes for students
+router.post("/forgot-password/request-otp", requestPasswordResetOtp);
+router.post("/forgot-password/verify-otp", verifyPasswordResetOtp);
+router.post("/forgot-password/reset", resetPasswordWithOtp);
+
+// Protected routes
+router.post("/change-password", authMiddleware, changePassword);
+router.put("/profile", authMiddleware, updateProfile);
 
 module.exports = router;
