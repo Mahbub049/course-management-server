@@ -1,36 +1,62 @@
-const nodemailer = require("nodemailer");
+// server/src/utils/mailer.js
 
-const transporter = nodemailer.createTransport({
-  host: process.env.SMTP_HOST, // smtp.gmail.com
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: false, // true only for 465
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
-
-  // ✅ Prevent "pending forever" on Render / SMTP block
-  connectionTimeout: 10_000, // 10s
-  greetingTimeout: 10_000,   // 10s
-  socketTimeout: 15_000,     // 15s
-});
-
-// ✅ Optional but very helpful: verify SMTP at startup (debug)
-transporter.verify((err) => {
-  if (err) {
-    console.error("❌ SMTP Verify Failed:", err.message);
-  } else {
-    console.log("✅ SMTP Server is ready to send emails");
+const sendMail = async ({ to, subject, html, text }) => {
+  if (!process.env.BREVO_API_KEY) {
+    throw new Error("BREVO_API_KEY is missing.");
   }
-});
 
-async function sendMail({ to, subject, html }) {
-  return transporter.sendMail({
-    from: process.env.MAIL_FROM || process.env.SMTP_USER,
-    to,
-    subject,
-    html,
-  });
-}
+  const senderName = process.env.MAIL_FROM_NAME || "BUBT Course Portal";
+  const senderEmail = process.env.MAIL_FROM_EMAIL || "bubtcourses@gmail.com";
 
-module.exports = { sendMail };
+  try {
+    const response = await fetch("https://api.brevo.com/v3/smtp/email", {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/json",
+        "api-key": process.env.BREVO_API_KEY,
+      },
+      body: JSON.stringify({
+        sender: {
+          name: senderName,
+          email: senderEmail,
+        },
+        to: [
+          {
+            email: to,
+          },
+        ],
+        subject,
+        htmlContent: html,
+        textContent: text || undefined,
+      }),
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok) {
+      console.error("BREVO EMAIL SEND ERROR:", {
+        status: response.status,
+        data,
+      });
+
+      throw new Error(
+        data?.message ||
+          data?.code ||
+          "Failed to send email through Brevo."
+      );
+    }
+
+    return data;
+  } catch (error) {
+    console.error("BREVO EMAIL SEND ERROR:", {
+      message: error.message,
+    });
+
+    throw error;
+  }
+};
+
+module.exports = {
+  sendMail,
+};
