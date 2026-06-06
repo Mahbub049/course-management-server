@@ -18,17 +18,33 @@ const DEFAULT_ALLOWED_EXTENSIONS = [
   'ppt',
   'pptx',
   'txt',
+  'c',
+  'cpp',
+  'java',
+  'py',
+  'js',
+  'jsx',
+  'html',
+  'css',
 ];
 
+const EXTENSION_PATTERN = /^[a-z0-9][a-z0-9_+-]{0,15}$/;
+
+function sanitizeExtension(value = '') {
+  const ext = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+/, '');
+
+  return EXTENSION_PATTERN.test(ext) ? ext : '';
+}
 
 function normalizeAllowedExtensions(value) {
   if (!Array.isArray(value)) {
     return DEFAULT_ALLOWED_EXTENSIONS;
   }
 
-  const cleaned = value
-    .map((item) => String(item || '').trim().toLowerCase().replace(/^\./, ''))
-    .filter((item) => DEFAULT_ALLOWED_EXTENSIONS.includes(item));
+  const cleaned = value.map((item) => sanitizeExtension(item)).filter(Boolean);
 
   const unique = Array.from(new Set(cleaned));
   return unique.length ? unique : DEFAULT_ALLOWED_EXTENSIONS;
@@ -495,8 +511,21 @@ const markSubmissionChecked = async (req, res) => {
     submission.checkedAt =
       submission.status === 'checked' ? new Date() : null;
 
-    if (awardedMarks !== undefined && awardedMarks !== null && awardedMarks !== '') {
-      submission.awardedMarks = Number(awardedMarks);
+    if (awardedMarks === '' || awardedMarks === null) {
+      submission.awardedMarks = null;
+      submission.syncedToMarks = false;
+      submission.syncedAt = null;
+    } else if (awardedMarks !== undefined) {
+      const numericMarks = Number(awardedMarks);
+      const maxMarks = Number(submission.assessment?.fullMarks || 0);
+
+      if (Number.isNaN(numericMarks) || numericMarks < 0 || numericMarks > maxMarks) {
+        return res.status(400).json({
+          message: `Marks must be between 0 and ${maxMarks}.`,
+        });
+      }
+
+      submission.awardedMarks = numericMarks;
     }
 
     await submission.save();

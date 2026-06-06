@@ -29,6 +29,46 @@ function classifyByName(rawName = '') {
   };
 }
 
+
+const DEFAULT_SUBMISSION_ALLOWED_EXTENSIONS = [
+  'pdf',
+  'doc',
+  'docx',
+  'zip',
+  'xls',
+  'xlsx',
+  'ppt',
+  'pptx',
+  'txt',
+  'c',
+  'cpp',
+  'java',
+  'py',
+  'js',
+  'jsx',
+  'html',
+  'css',
+];
+
+const EXTENSION_PATTERN = /^[a-z0-9][a-z0-9_+-]{0,15}$/;
+
+function sanitizeExtension(value = '') {
+  const ext = String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/^\.+/, '');
+
+  return EXTENSION_PATTERN.test(ext) ? ext : '';
+}
+
+function normalizeSubmissionAllowedExtensions(value) {
+  if (!Array.isArray(value)) return DEFAULT_SUBMISSION_ALLOWED_EXTENSIONS;
+
+  const cleaned = value.map((item) => sanitizeExtension(item)).filter(Boolean);
+  const unique = Array.from(new Set(cleaned));
+  return unique.length ? unique : DEFAULT_SUBMISSION_ALLOWED_EXTENSIONS;
+}
+
 function round2(num) {
   return Math.round(Number(num || 0) * 100) / 100;
 }
@@ -263,9 +303,9 @@ const createAssessment = async (req, res) => {
       finalSubmissionConfig = {
         instructions: String(submissionConfig?.instructions || '').trim(),
         dueDate: submissionConfig?.dueDate || null,
-        allowedExtensions: Array.isArray(submissionConfig?.allowedExtensions)
-          ? submissionConfig.allowedExtensions.map((item) => String(item).replace(/^\./, '').toLowerCase())
-          : ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx'],
+        allowedExtensions: normalizeSubmissionAllowedExtensions(
+          submissionConfig?.allowedExtensions
+        ),
         maxFileSizeMB: Number(submissionConfig?.maxFileSizeMB || 10),
         allowResubmission: submissionConfig?.allowResubmission !== false,
       };
@@ -446,9 +486,9 @@ const updateAssessment = async (req, res) => {
       finalSubmissionConfig = {
         instructions: String(submissionConfig?.instructions || '').trim(),
         dueDate: submissionConfig?.dueDate || null,
-        allowedExtensions: Array.isArray(submissionConfig?.allowedExtensions)
-          ? submissionConfig.allowedExtensions.map((item) => String(item).replace(/^\./, '').toLowerCase())
-          : ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx'],
+        allowedExtensions: normalizeSubmissionAllowedExtensions(
+          submissionConfig?.allowedExtensions
+        ),
         maxFileSizeMB: Number(submissionConfig?.maxFileSizeMB || 10),
         allowResubmission: submissionConfig?.allowResubmission !== false,
       };
@@ -497,8 +537,8 @@ const updateAssessment = async (req, res) => {
         instructions: String(submissionConfig?.instructions || assessment.submissionConfig?.instructions || '').trim(),
         dueDate: submissionConfig?.dueDate || assessment.submissionConfig?.dueDate || null,
         allowedExtensions: Array.isArray(submissionConfig?.allowedExtensions)
-          ? submissionConfig.allowedExtensions.map((item) => String(item).replace(/^\./, '').toLowerCase())
-          : (assessment.submissionConfig?.allowedExtensions || ['pdf', 'doc', 'docx', 'zip', 'xls', 'xlsx', 'ppt', 'pptx']),
+          ? normalizeSubmissionAllowedExtensions(submissionConfig.allowedExtensions)
+          : normalizeSubmissionAllowedExtensions(assessment.submissionConfig?.allowedExtensions),
         maxFileSizeMB: Number(submissionConfig?.maxFileSizeMB || assessment.submissionConfig?.maxFileSizeMB || 10),
         allowResubmission: submissionConfig?.allowResubmission !== false,
       };

@@ -1,16 +1,14 @@
 const multer = require('multer');
 const path = require('path');
 
-const allowedExts = new Set([
-  '.pdf',
-  '.doc',
-  '.docx',
-  '.zip',
-  '.xls',
-  '.xlsx',
-  '.ppt',
-  '.pptx',
-  '.txt',
+const SAFE_EXTENSION_PATTERN = /^\.[a-z0-9][a-z0-9_+-]{0,15}$/i;
+const BLOCKED_EXTENSIONS = new Set([
+  '.exe',
+  '.bat',
+  '.cmd',
+  '.com',
+  '.msi',
+  '.scr',
 ]);
 
 const storage = multer.memoryStorage();
@@ -18,10 +16,10 @@ const storage = multer.memoryStorage();
 function fileFilter(_req, file, cb) {
   const ext = path.extname(file.originalname || '').toLowerCase();
 
-  if (!allowedExts.has(ext)) {
+  if (!SAFE_EXTENSION_PATTERN.test(ext) || BLOCKED_EXTENSIONS.has(ext)) {
     return cb(
       new Error(
-        'Only pdf, doc, docx, zip, xls, xlsx, ppt, pptx and txt files are allowed.'
+        'Invalid file type. Please upload a file type allowed by the teacher.'
       )
     );
   }
