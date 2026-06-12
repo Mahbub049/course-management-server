@@ -29,6 +29,53 @@ function classifyByName(rawName = '') {
   };
 }
 
+function getHybridExamKey(rawName = '') {
+  const name = String(rawName || '').toLowerCase();
+
+  const isMid = name.includes('mid');
+  const isFinal = name.includes('final');
+  const isLab = name.includes('lab');
+  const isTheory =
+    name.includes('theory') ||
+    name.includes('written') ||
+    name.includes('theoretical');
+
+  if (isMid && isLab) return 'lab_mid';
+  if (isMid && isTheory) return 'theory_mid';
+  if (isMid) return 'generic_mid';
+
+  if (isFinal && isLab) return 'lab_final';
+  if (isFinal && isTheory) return 'theory_final';
+  if (isFinal) return 'generic_final';
+
+  return '';
+}
+
+function getHybridExamLabel(key = '') {
+  const labels = {
+    theory_mid: 'Theory Mid',
+    lab_mid: 'Lab Mid',
+    theory_final: 'Theory Final',
+    lab_final: 'Lab Final',
+  };
+
+  return labels[key] || 'Hybrid exam';
+}
+
+function validateHybridExamName(rawName = '') {
+  const key = getHybridExamKey(rawName);
+
+  if (key === 'generic_mid') {
+    return 'For hybrid courses, please use either "Theory Mid" or "Lab Mid" instead of a generic Mid name.';
+  }
+
+  if (key === 'generic_final') {
+    return 'For hybrid courses, please use either "Theory Final" or "Lab Final" instead of a generic Final name.';
+  }
+
+  return null;
+}
+
 
 const DEFAULT_SUBMISSION_ALLOWED_EXTENSIONS = [
   'pdf',
@@ -342,23 +389,43 @@ const createAssessment = async (req, res) => {
       }
     }
 
-    if (newFlags.isMid) {
-      const alreadyMid = existing.some((a) => classifyByName(a.name).isMid);
-      if (alreadyMid) {
+    const courseType = String(course?.courseType || 'theory').toLowerCase();
+
+    if (courseType === 'hybrid' && (newFlags.isMid || (newFlags.isFinal && !isAdvancedLabFinal))) {
+      const hybridNameError = validateHybridExamName(name);
+      if (hybridNameError) {
+        return res.status(400).json({ message: hybridNameError });
+      }
+
+      const hybridKey = getHybridExamKey(name);
+      const alreadySameHybridExam = existing.some(
+        (a) => getHybridExamKey(a.name) === hybridKey
+      );
+
+      if (hybridKey && alreadySameHybridExam) {
         return res.status(400).json({
-          message:
-            'Mid already exists for this course. Only one Mid exam is allowed.',
+          message: `${getHybridExamLabel(hybridKey)} already exists for this hybrid course.`,
         });
       }
-    }
+    } else {
+      if (newFlags.isMid) {
+        const alreadyMid = existing.some((a) => classifyByName(a.name).isMid);
+        if (alreadyMid) {
+          return res.status(400).json({
+            message:
+              'Mid already exists for this course. Only one Mid exam is allowed.',
+          });
+        }
+      }
 
-    if (newFlags.isFinal && !isAdvancedLabFinal) {
-      const alreadyFinal = existing.some((a) => classifyByName(a.name).isFinal);
-      if (alreadyFinal) {
-        return res.status(400).json({
-          message:
-            'Final already exists for this course. Only one Final exam is allowed.',
-        });
+      if (newFlags.isFinal && !isAdvancedLabFinal) {
+        const alreadyFinal = existing.some((a) => classifyByName(a.name).isFinal);
+        if (alreadyFinal) {
+          return res.status(400).json({
+            message:
+              'Final already exists for this course. Only one Final exam is allowed.',
+          });
+        }
       }
     }
 
@@ -548,23 +615,43 @@ const updateAssessment = async (req, res) => {
       assessment.submissionConfig = null;
     }
 
-    if (newFlags.isMid) {
-      const alreadyMid = siblings.some((a) => classifyByName(a.name).isMid);
-      if (alreadyMid) {
+    const courseType = String(assessment.course?.courseType || 'theory').toLowerCase();
+
+    if (courseType === 'hybrid' && (newFlags.isMid || (newFlags.isFinal && !isAdvancedLabFinal))) {
+      const hybridNameError = validateHybridExamName(finalName);
+      if (hybridNameError) {
+        return res.status(400).json({ message: hybridNameError });
+      }
+
+      const hybridKey = getHybridExamKey(finalName);
+      const alreadySameHybridExam = siblings.some(
+        (a) => getHybridExamKey(a.name) === hybridKey
+      );
+
+      if (hybridKey && alreadySameHybridExam) {
         return res.status(400).json({
-          message:
-            'Mid already exists for this course. Only one Mid exam is allowed.',
+          message: `${getHybridExamLabel(hybridKey)} already exists for this hybrid course.`,
         });
       }
-    }
+    } else {
+      if (newFlags.isMid) {
+        const alreadyMid = siblings.some((a) => classifyByName(a.name).isMid);
+        if (alreadyMid) {
+          return res.status(400).json({
+            message:
+              'Mid already exists for this course. Only one Mid exam is allowed.',
+          });
+        }
+      }
 
-    if (newFlags.isFinal && !isAdvancedLabFinal) {
-      const alreadyFinal = siblings.some((a) => classifyByName(a.name).isFinal);
-      if (alreadyFinal) {
-        return res.status(400).json({
-          message:
-            'Final already exists for this course. Only one Final exam is allowed.',
-        });
+      if (newFlags.isFinal && !isAdvancedLabFinal) {
+        const alreadyFinal = siblings.some((a) => classifyByName(a.name).isFinal);
+        if (alreadyFinal) {
+          return res.status(400).json({
+            message:
+              'Final already exists for this course. Only one Final exam is allowed.',
+          });
+        }
       }
     }
 

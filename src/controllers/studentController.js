@@ -156,6 +156,77 @@ const computeCtContributionByPolicy = (course, entries) => {
 
 // ---------- Core computation ----------
 
+const findByName = (assessments = [], matcher) => {
+  return assessments.find((assessment) => matcher(lower(assessment?.name || '')));
+};
+
+const findAttendanceAssessment = (assessments = []) => {
+  return findByName(assessments, (name) =>
+    name.includes('attendance') || name.includes('att')
+  );
+};
+
+const findAssignmentAssessment = (assessments = []) => {
+  return findByName(assessments, (name) =>
+    name.includes('assignment') || name.includes('assign')
+  );
+};
+
+const findPresentationAssessment = (assessments = []) => {
+  return findByName(assessments, (name) =>
+    name.includes('presentation') || name.includes('present')
+  );
+};
+
+const findTheoryMidAssessment = (assessments = []) => {
+  return (
+    findByName(assessments, (name) => name.includes('theory') && name.includes('mid')) ||
+    findByName(assessments, (name) =>
+      name.includes('mid') && !name.includes('lab') && !name.includes('final')
+    )
+  );
+};
+
+const findLabMidAssessment = (assessments = []) => {
+  return findByName(assessments, (name) => name.includes('lab') && name.includes('mid'));
+};
+
+const findTheoryFinalAssessment = (assessments = []) => {
+  return (
+    findByName(assessments, (name) => name.includes('theory') && name.includes('final')) ||
+    findByName(assessments, (name) =>
+      name.includes('final') && !name.includes('lab') && !name.includes('mid')
+    )
+  );
+};
+
+const findLabFinalAssessment = (assessments = []) => {
+  return findByName(assessments, (name) =>
+    name.includes('lab') && name.includes('final') && !name.includes('submission')
+  );
+};
+
+const getPctFromMarks = (marksByAssessment, assessment) => {
+  if (!assessment) return 0;
+
+  const assessmentId = assessment._id.toString();
+  const fullMarks = Number(assessment.fullMarks || 0);
+  const mark = marksByAssessment[assessmentId];
+
+  if (mark == null || Number.isNaN(Number(mark)) || fullMarks <= 0) return 0;
+
+  return Number(mark) / fullMarks;
+};
+
+const getExistingFull = (assessment, targetFullMarks) => {
+  return Number(assessment?.fullMarks || 0) > 0 ? Number(targetFullMarks || 0) : 0;
+};
+
+const getHybridTheoryPracticeWeight = (course) => {
+  const ctWeight = Number(normalizeCtPolicy(course).totalWeight || 0);
+  return Math.max(0, 25 - ctWeight);
+};
+
 const computeSummaryForStudent = (
   course,
   assessments,
@@ -163,8 +234,9 @@ const computeSummaryForStudent = (
   markDocsByAssessment = {}
 ) => {
   const courseType = getCourseType(course);
+  const assessmentList = Array.isArray(assessments) ? assessments : [];
 
-  const hasFinalIncomplete = assessments.some((assessment) => {
+  const hasFinalIncomplete = assessmentList.some((assessment) => {
     const assessmentId = assessment._id.toString();
     return (
       isFinalAssessment(assessment) &&
@@ -172,103 +244,11 @@ const computeSummaryForStudent = (
     );
   });
 
-  const getPct = (assessmentId, fullMarks) => {
-    const mark = marksByAssessment[assessmentId];
-    if (mark == null || Number.isNaN(Number(mark)) || Number(fullMarks) <= 0) {
-      return 0;
-    }
-    return Number(mark) / Number(fullMarks);
-  };
+  const getPct = (assessment) => getPctFromMarks(marksByAssessment, assessment);
 
-  // ===== LAB COURSES =====
-  if (courseType === 'lab') {
-    const regularLabAssessments = assessments.filter((a) => {
-      const name = lower(a.name);
-
-      return (
-        a?.structureType !== 'lab_final' &&
-        a?.structureType !== 'lab_submission' &&
-        !name.includes('mid') &&
-        !name.includes('final') &&
-        !name.includes('att') &&
-        !name.includes('attendance')
-      );
-    });
-
-    const midAssessment = assessments.find((a) =>
-      lower(a.name).includes('mid')
-    );
-
-    const advancedLabFinal = assessments.find(
-      (a) => a?.structureType === 'lab_final'
-    );
-
-    const regularFinal = assessments.find(
-      (a) =>
-        a?.structureType !== 'lab_final' &&
-        lower(a.name).includes('final')
-    );
-
-    const finalAssessment = advancedLabFinal || regularFinal;
-
-    const attendanceAssessment = assessments.find((a) => {
-      const name = lower(a.name);
-      return name.includes('att') || name.includes('attendance');
-    });
-
-    const getCappedMark = (assessmentId, fullMarks) => {
-      const full = Number(fullMarks || 0);
-      const mark = marksByAssessment[assessmentId];
-
-      if (full <= 0 || mark == null || Number.isNaN(Number(mark))) {
-        return 0;
-      }
-
-      return Math.max(0, Math.min(Number(mark), full));
-    };
-
-    const labTotalFullMarks = regularLabAssessments.reduce(
-      (sum, assessment) => sum + Number(assessment.fullMarks || 0),
-      0
-    );
-
-    const labTotalObtainedMarks = regularLabAssessments.reduce((sum, assessment) => {
-      const id = assessment._id.toString();
-      return sum + getCappedMark(id, assessment.fullMarks);
-    }, 0);
-
-    const labNow =
-      labTotalFullMarks > 0
-        ? (labTotalObtainedMarks / labTotalFullMarks) * 25
-        : 0;
-
-    const labScore25 = roundPolicyTotal(labNow);
-
-    const labFull = labTotalFullMarks > 0 ? 25 : 0;
-
-    const midNow = midAssessment
-      ? getPct(midAssessment._id.toString(), midAssessment.fullMarks) * 30
-      : 0;
-    const midFull = midAssessment ? 30 : 0;
-
-    const finalNow = finalAssessment
-      ? getPct(finalAssessment._id.toString(), finalAssessment.fullMarks) * 40
-      : 0;
-    const finalFull = finalAssessment ? 40 : 0;
-
-    const attNow = attendanceAssessment
-      ? getPct(
-        attendanceAssessment._id.toString(),
-        attendanceAssessment.fullMarks
-      ) * 5
-      : 0;
-    const attFull = attendanceAssessment ? 5 : 0;
-
-    const currentTotal = labScore25 + midNow + finalNow + attNow;
-    const maxPossible = labFull + midFull + finalFull + attFull;
-
+  const buildFinalSummary = (currentTotal, maxPossible, extra = {}) => {
     const roundedTotal = round2(roundPolicyTotal(currentTotal));
-    const grade = hasFinalIncomplete ? "I" : getGradeFromTotal(roundedTotal);
+    const grade = hasFinalIncomplete ? 'I' : getGradeFromTotal(roundedTotal);
 
     const A_PLUS = 80;
     const neededForAPlus =
@@ -281,14 +261,158 @@ const computeSummaryForStudent = (
       maxPossible: round2(maxPossible),
       grade,
       totalObtained: roundedTotal,
-      ctMain: round2(labScore25),
-      labMain: round2(labScore25),
       aPlusNeeded: round2(neededForAPlus),
       aPlusInfo: {
         needed: round2(neededForAPlus),
         maxPossible: round2(maxPossible),
       },
+      ...extra,
     };
+  };
+
+  // ===== LAB COURSES =====
+  if (courseType === 'lab') {
+    const regularLabAssessments = assessmentList.filter((a) => {
+      const name = lower(a.name);
+
+      return (
+        a?.structureType !== 'lab_final' &&
+        a?.structureType !== 'lab_submission' &&
+        !name.includes('mid') &&
+        !name.includes('final') &&
+        !name.includes('att') &&
+        !name.includes('attendance')
+      );
+    });
+
+    const midAssessment = findByName(assessmentList, (name) => name.includes('mid'));
+
+    const advancedLabFinal = assessmentList.find(
+      (a) => a?.structureType === 'lab_final'
+    );
+
+    const regularFinal = assessmentList.find(
+      (a) =>
+        a?.structureType !== 'lab_final' &&
+        lower(a.name).includes('final')
+    );
+
+    const finalAssessment = advancedLabFinal || regularFinal;
+    const attendanceAssessment = findAttendanceAssessment(assessmentList);
+
+    const getCappedMark = (assessment) => {
+      const full = Number(assessment?.fullMarks || 0);
+      const mark = marksByAssessment[assessment?._id?.toString?.()];
+
+      if (full <= 0 || mark == null || Number.isNaN(Number(mark))) return 0;
+
+      return Math.max(0, Math.min(Number(mark), full));
+    };
+
+    const labTotalFullMarks = regularLabAssessments.reduce(
+      (sum, assessment) => sum + Number(assessment.fullMarks || 0),
+      0
+    );
+
+    const labTotalObtainedMarks = regularLabAssessments.reduce(
+      (sum, assessment) => sum + getCappedMark(assessment),
+      0
+    );
+
+    const labNow =
+      labTotalFullMarks > 0
+        ? (labTotalObtainedMarks / labTotalFullMarks) * 25
+        : 0;
+
+    const labScore25 = roundPolicyTotal(labNow);
+    const labFull = labTotalFullMarks > 0 ? 25 : 0;
+
+    const midNow = getPct(midAssessment) * 30;
+    const midFull = getExistingFull(midAssessment, 30);
+
+    const finalNow = getPct(finalAssessment) * 40;
+    const finalFull = getExistingFull(finalAssessment, 40);
+
+    const attNow = getPct(attendanceAssessment) * 5;
+    const attFull = getExistingFull(attendanceAssessment, 5);
+
+    return buildFinalSummary(
+      labScore25 + midNow + finalNow + attNow,
+      labFull + midFull + finalFull + attFull,
+      {
+        ctMain: round2(labScore25),
+        labMain: round2(labScore25),
+      }
+    );
+  }
+
+  // ===== HYBRID COURSES =====
+  if (courseType === 'hybrid') {
+    const ctEntriesNow = [];
+    const ctEntriesFull = [];
+
+    assessmentList.forEach((assessment) => {
+      if (assessment?.structureType === 'lab_submission') return;
+      if (!isCtAssessment(assessment?.name)) return;
+
+      const id = assessment._id.toString();
+      const full = Number(assessment.fullMarks || 0);
+
+      ctEntriesNow.push({ id, pct: getPct(assessment) });
+      ctEntriesFull.push({ id, pct: full > 0 ? 1 : 0 });
+    });
+
+    const theoryMidAssessment = findTheoryMidAssessment(assessmentList);
+    const labMidAssessment = findLabMidAssessment(assessmentList);
+    const theoryFinalAssessment = findTheoryFinalAssessment(assessmentList);
+    const labFinalAssessment = findLabFinalAssessment(assessmentList);
+    const assignmentAssessment = findAssignmentAssessment(assessmentList);
+    const attendanceAssessment = findAttendanceAssessment(assessmentList);
+
+    const ctNow = computeCtContributionByPolicy(course, ctEntriesNow);
+    const ctFull = computeCtContributionByPolicy(course, ctEntriesFull);
+
+    const assignmentWeight = getHybridTheoryPracticeWeight(course);
+
+    const theoryMidNow = getPct(theoryMidAssessment) * 20;
+    const theoryMidFull = getExistingFull(theoryMidAssessment, 20);
+
+    const labMidNow = getPct(labMidAssessment) * 10;
+    const labMidFull = getExistingFull(labMidAssessment, 10);
+
+    const theoryFinalNow = getPct(theoryFinalAssessment) * 30;
+    const theoryFinalFull = getExistingFull(theoryFinalAssessment, 30);
+
+    const labFinalNow = getPct(labFinalAssessment) * 10;
+    const labFinalFull = getExistingFull(labFinalAssessment, 10);
+
+    const assignmentNow = getPct(assignmentAssessment) * assignmentWeight;
+    const assignmentFull = getExistingFull(assignmentAssessment, assignmentWeight);
+
+    const attNow = getPct(attendanceAssessment) * 5;
+    const attFull = getExistingFull(attendanceAssessment, 5);
+
+    return buildFinalSummary(
+      ctNow +
+        theoryMidNow +
+        labMidNow +
+        theoryFinalNow +
+        labFinalNow +
+        assignmentNow +
+        attNow,
+      ctFull +
+        theoryMidFull +
+        labMidFull +
+        theoryFinalFull +
+        labFinalFull +
+        assignmentFull +
+        attFull,
+      {
+        ctMain: round2(roundPolicyTotal(ctNow)),
+        labMain: round2(roundPolicyTotal(labMidNow + labFinalNow)),
+        assignmentMain: round2(roundPolicyTotal(assignmentNow)),
+      }
+    );
   }
 
   // ===== THEORY COURSES =====
@@ -313,11 +437,11 @@ const computeSummaryForStudent = (
   let hasAssignment = false;
   let hasPresentation = false;
 
-  assessments.forEach((a) => {
+  assessmentList.forEach((a) => {
     const id = a._id.toString();
     const name = lower(a.name);
     const full = Number(a.fullMarks || 0);
-    const pctNow = getPct(id, full);
+    const pctNow = getPct(a);
     const hasThis = full > 0;
 
     if (isCtAssessment(a.name)) {
@@ -369,30 +493,13 @@ const computeSummaryForStudent = (
     assignPresFull = presPctFull * 10;
   }
 
-  const currentTotal = ctNow + midNow + finalNow + attNow + assignPresNow;
-  const maxPossible = ctFull + midFull + finalFull + attFull + assignPresFull;
-
-  const roundedTotal = round2(roundPolicyTotal(currentTotal));
-  const grade = hasFinalIncomplete ? "I" : getGradeFromTotal(roundedTotal);
-
-  const A_PLUS = 80;
-  const neededForAPlus =
-    hasFinalIncomplete || roundedTotal >= A_PLUS
-      ? 0
-      : Math.max(0, A_PLUS - roundedTotal);
-
-  return {
-    currentTotal: roundedTotal,
-    maxPossible: round2(maxPossible),
-    grade,
-    totalObtained: roundedTotal,
-    ctMain: round2(roundPolicyTotal(ctNow)),
-    aPlusNeeded: round2(neededForAPlus),
-    aPlusInfo: {
-      needed: round2(neededForAPlus),
-      maxPossible: round2(maxPossible),
-    },
-  };
+  return buildFinalSummary(
+    ctNow + midNow + finalNow + attNow + assignPresNow,
+    ctFull + midFull + finalFull + attFull + assignPresFull,
+    {
+      ctMain: round2(roundPolicyTotal(ctNow)),
+    }
+  );
 };
 
 // ---------- Controller functions ----------
@@ -527,6 +634,7 @@ const getStudentCourses = async (req, res) => {
         semester: course.semester,
         year: course.year,
         courseType: course.courseType,
+        classTestPolicy: course.classTestPolicy || {},
         complaintSettings: formatComplaintSettings(course),
         summaryStatus,
         summary,
@@ -628,6 +736,7 @@ const getStudentCourseDetails = async (req, res) => {
         semester: course.semester,
         year: course.year,
         courseType: course.courseType,
+        classTestPolicy: course.classTestPolicy || {},
         complaintSettings: formatComplaintSettings(course),
         projectFeature: {
           mode: course?.projectFeature?.mode || "lab_final",

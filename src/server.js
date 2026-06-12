@@ -15,6 +15,7 @@ const projectFormRoutes = require('./routes/projectFormRoutes');
 const labSubmissionRoutes = require('./routes/labSubmissionRoutes');
 const routineRoutes = require('./routes/routineRoutes');
 const academicCalendarRoutes = require("./routes/academicCalendarRoutes");
+const notebookRoutes = require("./routes/notebookRoutes");
 
 const app = express();
 
@@ -65,6 +66,7 @@ app.use('/api/project-form', projectFormRoutes);
 app.use('/api/lab-submissions', labSubmissionRoutes);
 app.use('/api/routine', routineRoutes);
 app.use("/api/academic-calendar", academicCalendarRoutes);
+app.use("/api/notebook", notebookRoutes);
 
 const PORT = process.env.PORT || 5000;
 
