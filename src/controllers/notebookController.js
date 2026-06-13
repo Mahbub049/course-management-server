@@ -8,6 +8,7 @@ const DEFAULT_SETTINGS = {
   includeName: true,
   includeFeedback: true,
   includeMcq: true,
+  includeBlankFields: false,
   mcqLabel: "Marking Category",
   mcqOptions: ["High", "Medium", "Low"],
   mcqFields: [
@@ -15,6 +16,12 @@ const DEFAULT_SETTINGS = {
       id: "mcq_1",
       label: "Marking Category",
       options: ["High", "Medium", "Low"],
+    },
+  ],
+  blankFields: [
+    {
+      id: "blank_1",
+      label: "Marks",
     },
   ],
 };
@@ -59,8 +66,29 @@ const sanitizeMcqFields = (raw = {}) => {
   });
 };
 
+const sanitizeBlankFields = (raw = {}) => {
+  const sourceFields =
+    Array.isArray(raw.blankFields) && raw.blankFields.length > 0
+      ? raw.blankFields
+      : DEFAULT_SETTINGS.blankFields;
+
+  const usedIds = new Set();
+
+  return sourceFields.map((field, index) => {
+    let id = cleanString(field?.id, `blank_${index + 1}`);
+    if (usedIds.has(id)) id = `${id}_${index + 1}`;
+    usedIds.add(id);
+
+    return {
+      id,
+      label: cleanString(field?.label, `Blank Field ${index + 1}`),
+    };
+  });
+};
+
 const sanitizeSettings = (raw = {}) => {
   const mcqFields = sanitizeMcqFields(raw);
+  const blankFields = sanitizeBlankFields(raw);
   const firstField = mcqFields[0] || DEFAULT_SETTINGS.mcqFields[0];
 
   return {
@@ -68,18 +96,20 @@ const sanitizeSettings = (raw = {}) => {
     includeName: raw.includeName === undefined ? true : Boolean(raw.includeName),
     includeFeedback: raw.includeFeedback === undefined ? true : Boolean(raw.includeFeedback),
     includeMcq: raw.includeMcq === undefined ? true : Boolean(raw.includeMcq),
+    includeBlankFields: raw.includeBlankFields === undefined ? false : Boolean(raw.includeBlankFields),
     mcqLabel: firstField.label,
     mcqOptions: firstField.options,
     mcqFields,
+    blankFields,
   };
 };
 
-const sanitizeSelectedOptions = (selectedOptions = {}) => {
-  if (!selectedOptions || typeof selectedOptions !== "object" || Array.isArray(selectedOptions)) {
+const sanitizeKeyValueMap = (values = {}) => {
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
     return {};
   }
 
-  return Object.entries(selectedOptions).reduce((acc, [key, value]) => {
+  return Object.entries(values).reduce((acc, [key, value]) => {
     const cleanKey = cleanString(key);
     if (!cleanKey) return acc;
     acc[cleanKey] = cleanString(value);
@@ -95,7 +125,8 @@ const sanitizeEvaluationRows = (rows = []) => {
     roll: cleanString(row.roll),
     name: cleanString(row.name),
     selectedOption: cleanString(row.selectedOption),
-    selectedOptions: sanitizeSelectedOptions(row.selectedOptions),
+    selectedOptions: sanitizeKeyValueMap(row.selectedOptions),
+    blankValues: sanitizeKeyValueMap(row.blankValues),
     feedback: typeof row.feedback === "string" ? row.feedback : "",
   }));
 };
@@ -144,6 +175,7 @@ const buildEvaluationRowsFromCourse = async (courseId) => {
       name: enrollment.student?.name || "",
       selectedOption: "",
       selectedOptions: {},
+      blankValues: {},
       feedback: "",
     }))
     .sort((a, b) =>

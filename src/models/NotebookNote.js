@@ -12,12 +12,21 @@ const mcqFieldSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const blankFieldSchema = new mongoose.Schema(
+  {
+    id: { type: String, trim: true, default: "" },
+    label: { type: String, trim: true, default: "Marks" },
+  },
+  { _id: false }
+);
+
 const notebookSettingsSchema = new mongoose.Schema(
   {
     includeRoll: { type: Boolean, default: true },
     includeName: { type: Boolean, default: true },
     includeFeedback: { type: Boolean, default: true },
     includeMcq: { type: Boolean, default: true },
+    includeBlankFields: { type: Boolean, default: false },
     mcqLabel: { type: String, trim: true, default: "Marking Category" },
     mcqOptions: {
       type: [String],
@@ -30,6 +39,15 @@ const notebookSettingsSchema = new mongoose.Schema(
           id: "mcq_1",
           label: "Marking Category",
           options: ["High", "Medium", "Low"],
+        },
+      ],
+    },
+    blankFields: {
+      type: [blankFieldSchema],
+      default: () => [
+        {
+          id: "blank_1",
+          label: "Marks",
         },
       ],
     },
@@ -48,6 +66,7 @@ const evaluationRowSchema = new mongoose.Schema(
     name: { type: String, trim: true, default: "" },
     selectedOption: { type: String, trim: true, default: "" },
     selectedOptions: { type: mongoose.Schema.Types.Mixed, default: {} },
+    blankValues: { type: mongoose.Schema.Types.Mixed, default: {} },
     feedback: { type: String, default: "" },
   },
   { _id: false }

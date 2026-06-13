@@ -5,12 +5,46 @@ const {
   getLatestAcademicCalendar,
   saveAcademicCalendar,
   detectAcademicCalendarCategory,
+  getFacultyCalendarEvents,
+  createFacultyCalendarEvent,
+  updateFacultyCalendarEvent,
+  deleteFacultyCalendarEvent,
 } = require("../controllers/academicCalendarController");
 
 const {
   authMiddleware,
   requireTeacher,
 } = require("../middleware/authMiddleware");
+
+
+// Personal faculty calendar events/tasks. These are private to each logged-in teacher.
+router.get(
+  "/faculty-events",
+  authMiddleware,
+  requireTeacher,
+  getFacultyCalendarEvents
+);
+
+router.post(
+  "/faculty-events",
+  authMiddleware,
+  requireTeacher,
+  createFacultyCalendarEvent
+);
+
+router.put(
+  "/faculty-events/:eventId",
+  authMiddleware,
+  requireTeacher,
+  updateFacultyCalendarEvent
+);
+
+router.delete(
+  "/faculty-events/:eventId",
+  authMiddleware,
+  requireTeacher,
+  deleteFacultyCalendarEvent
+);
 
 // Logged-in teacher/student can view academic calendar
 router.get("/", authMiddleware, getLatestAcademicCalendar);
