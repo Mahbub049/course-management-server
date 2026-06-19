@@ -107,6 +107,7 @@ const createCourse = async (req, res) => {
       code,
       title,
       section,
+      intake,
       semester,
       year,
       courseType,
@@ -128,6 +129,7 @@ const createCourse = async (req, res) => {
       code,
       title,
       section,
+      intake: typeof intake === "string" ? intake.trim() : intake || "",
       semester,
       year,
       courseType: normalizedType,
@@ -147,6 +149,7 @@ const createCourse = async (req, res) => {
       code: course.code,
       title: course.title,
       section: course.section,
+      intake: course.intake || "",
       semester: course.semester,
       year: course.year,
       courseType: course.courseType,
@@ -187,6 +190,7 @@ const getCourses = async (req, res) => {
       code: c.code,
       title: c.title,
       section: c.section,
+      intake: c.intake || "",
       semester: c.semester,
       year: c.year,
       courseType: c.courseType,
@@ -229,6 +233,7 @@ const updateCourse = async (req, res) => {
     const {
       title,
       section,
+      intake,
       semester,
       year,
       courseType,
@@ -243,6 +248,7 @@ const updateCourse = async (req, res) => {
 
     if (title !== undefined) update.title = String(title).trim();
     if (section !== undefined) update.section = String(section).trim();
+    if (intake !== undefined) update.intake = String(intake).trim();
     if (semester !== undefined) update.semester = String(semester).trim();
     if (year !== undefined) update.year = Number(year);
 

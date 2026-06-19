@@ -60,6 +60,11 @@ const courseSchema = new mongoose.Schema(
     section: {
       type: String,
     },
+    intake: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     semester: {
       type: String,
     },

@@ -11,6 +11,15 @@ const timeSlotSchema = new mongoose.Schema(
   { _id: false }
 );
 
+
+const counsellingSlotSchema = new mongoose.Schema(
+  {
+    day: { type: String, required: true, trim: true },
+    slotId: { type: String, required: true, trim: true },
+  },
+  { _id: false }
+);
+
 const courseDirectorySchema = new mongoose.Schema(
   {
     code: { type: String, default: "", trim: true },
@@ -58,6 +67,10 @@ const routineSchema = new mongoose.Schema(
     },
     courses: {
       type: [courseDirectorySchema],
+      default: [],
+    },
+    counsellingSlots: {
+      type: [counsellingSlotSchema],
       default: [],
     },
     sourceFileName: { type: String, default: "", trim: true },
