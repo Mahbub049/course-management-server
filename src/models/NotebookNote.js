@@ -27,6 +27,7 @@ const notebookSettingsSchema = new mongoose.Schema(
     includeFeedback: { type: Boolean, default: true },
     includeMcq: { type: Boolean, default: true },
     includeBlankFields: { type: Boolean, default: false },
+    includeTotal: { type: Boolean, default: false },
     mcqLabel: { type: String, trim: true, default: "Marking Category" },
     mcqOptions: {
       type: [String],

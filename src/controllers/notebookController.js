@@ -9,6 +9,7 @@ const DEFAULT_SETTINGS = {
   includeFeedback: true,
   includeMcq: true,
   includeBlankFields: false,
+  includeTotal: false,
   mcqLabel: "Marking Category",
   mcqOptions: ["High", "Medium", "Low"],
   mcqFields: [
@@ -33,10 +34,14 @@ const cleanString = (value, fallback = "") => {
   return text || fallback;
 };
 
+const cleanEditableString = (value, fallback = "") => {
+  if (value === undefined || value === null) return fallback;
+  return String(value).trim();
+};
+
 const cleanOptions = (options) => {
-  if (!Array.isArray(options)) return [...DEFAULT_SETTINGS.mcqOptions];
-  const cleaned = options.map((x) => cleanString(x)).filter(Boolean);
-  return cleaned.length ? cleaned : [...DEFAULT_SETTINGS.mcqOptions];
+  if (!Array.isArray(options) || options.length === 0) return [...DEFAULT_SETTINGS.mcqOptions];
+  return options.map((x) => cleanEditableString(x));
 };
 
 const sanitizeMcqFields = (raw = {}) => {
@@ -60,8 +65,8 @@ const sanitizeMcqFields = (raw = {}) => {
 
     return {
       id,
-      label: cleanString(field?.label || field?.mcqLabel, `Category ${index + 1}`),
-      options: cleanOptions(field?.options || field?.mcqOptions),
+      label: cleanEditableString(field?.label ?? field?.mcqLabel, `Category ${index + 1}`),
+      options: cleanOptions(field?.options ?? field?.mcqOptions),
     };
   });
 };
@@ -81,7 +86,7 @@ const sanitizeBlankFields = (raw = {}) => {
 
     return {
       id,
-      label: cleanString(field?.label, `Blank Field ${index + 1}`),
+      label: cleanEditableString(field?.label, `Blank Field ${index + 1}`),
     };
   });
 };
@@ -97,6 +102,7 @@ const sanitizeSettings = (raw = {}) => {
     includeFeedback: raw.includeFeedback === undefined ? true : Boolean(raw.includeFeedback),
     includeMcq: raw.includeMcq === undefined ? true : Boolean(raw.includeMcq),
     includeBlankFields: raw.includeBlankFields === undefined ? false : Boolean(raw.includeBlankFields),
+    includeTotal: raw.includeTotal === undefined ? false : Boolean(raw.includeTotal),
     mcqLabel: firstField.label,
     mcqOptions: firstField.options,
     mcqFields,
