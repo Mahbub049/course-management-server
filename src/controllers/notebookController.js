@@ -10,6 +10,7 @@ const DEFAULT_SETTINGS = {
   includeMcq: true,
   includeBlankFields: false,
   includeTotal: false,
+  columnOrder: [],
   mcqLabel: "Marking Category",
   mcqOptions: ["High", "Medium", "Low"],
   mcqFields: [
@@ -42,6 +43,29 @@ const cleanEditableString = (value, fallback = "") => {
 const cleanOptions = (options) => {
   if (!Array.isArray(options) || options.length === 0) return [...DEFAULT_SETTINGS.mcqOptions];
   return options.map((x) => cleanEditableString(x));
+};
+
+
+const blankColumnId = (field) => `blank:${field.id}`;
+const mcqColumnId = (field) => `mcq:${field.id}`;
+
+const getAllMovableColumnIds = (settings = {}) => [
+  "roll",
+  "name",
+  ...(Array.isArray(settings.blankFields) ? settings.blankFields.map(blankColumnId) : []),
+  ...(Array.isArray(settings.mcqFields) ? settings.mcqFields.map(mcqColumnId) : []),
+  "feedback",
+];
+
+const sanitizeColumnOrder = (order = [], settings = {}) => {
+  const allIds = getAllMovableColumnIds(settings);
+  const allowed = new Set(allIds);
+  const seen = new Set();
+  const savedOrder = Array.isArray(order) ? order : [];
+  const normalized = savedOrder
+    .map((item) => cleanString(item))
+    .filter((id) => allowed.has(id) && !seen.has(id) && seen.add(id));
+  return [...normalized, ...allIds.filter((id) => !seen.has(id))];
 };
 
 const sanitizeMcqFields = (raw = {}) => {
@@ -96,7 +120,7 @@ const sanitizeSettings = (raw = {}) => {
   const blankFields = sanitizeBlankFields(raw);
   const firstField = mcqFields[0] || DEFAULT_SETTINGS.mcqFields[0];
 
-  return {
+  const settings = {
     includeRoll: raw.includeRoll === undefined ? true : Boolean(raw.includeRoll),
     includeName: raw.includeName === undefined ? true : Boolean(raw.includeName),
     includeFeedback: raw.includeFeedback === undefined ? true : Boolean(raw.includeFeedback),
@@ -107,6 +131,11 @@ const sanitizeSettings = (raw = {}) => {
     mcqOptions: firstField.options,
     mcqFields,
     blankFields,
+  };
+
+  return {
+    ...settings,
+    columnOrder: sanitizeColumnOrder(raw.columnOrder, settings),
   };
 };
 
@@ -358,6 +387,80 @@ exports.updateNotebookNote = async (req, res) => {
   } catch (err) {
     console.error("updateNotebookNote error", err);
     return res.status(500).json({ message: "Failed to save notebook note." });
+  }
+};
+
+
+exports.refreshNotebookStudents = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const { noteId } = req.params;
+
+    if (!isValidObjectId(noteId)) {
+      return res.status(400).json({ message: "Invalid note id." });
+    }
+
+    const note = await NotebookNote.findOne({ _id: noteId, teacher: teacherId });
+
+    if (!note) {
+      return res.status(404).json({ message: "Notebook note not found." });
+    }
+
+    if (note.type !== "evaluation") {
+      return res.status(400).json({ message: "Student refresh is available only for evaluation sheets." });
+    }
+
+    if (!note.course) {
+      return res.status(400).json({ message: "This evaluation sheet is not connected to a course." });
+    }
+
+    const course = await getOwnedCourse(note.course, teacherId);
+    if (!course) {
+      return res.status(404).json({ message: "Connected course was not found." });
+    }
+
+    const latestRows = await buildEvaluationRowsFromCourse(course._id);
+    const existingStudentIds = new Set();
+    const existingRolls = new Set();
+
+    note.evaluationRows.forEach((row) => {
+      const studentId = row.student?.toString?.() || (row.student ? String(row.student) : "");
+      const roll = cleanString(row.roll);
+      if (studentId) existingStudentIds.add(studentId);
+      if (roll) existingRolls.add(roll);
+    });
+
+    const rowsToAdd = latestRows.filter((row) => {
+      const studentId = row.student?.toString?.() || (row.student ? String(row.student) : "");
+      const roll = cleanString(row.roll);
+      if (studentId && existingStudentIds.has(studentId)) return false;
+      if (roll && existingRolls.has(roll)) return false;
+      if (studentId) existingStudentIds.add(studentId);
+      if (roll) existingRolls.add(roll);
+      return true;
+    });
+
+    if (rowsToAdd.length > 0) {
+      note.evaluationRows = [...note.evaluationRows, ...rowsToAdd];
+      await note.save();
+    }
+
+    const populated = await NotebookNote.findById(note._id).populate(
+      "course",
+      "code title section semester year courseType"
+    );
+
+    return res.json({
+      message:
+        rowsToAdd.length > 0
+          ? `${rowsToAdd.length} new student${rowsToAdd.length === 1 ? "" : "s"} added.`
+          : "Student data is already up to date.",
+      addedCount: rowsToAdd.length,
+      note: formatNote(populated),
+    });
+  } catch (err) {
+    console.error("refreshNotebookStudents error", err);
+    return res.status(500).json({ message: "Failed to refresh student data." });
   }
 };
 

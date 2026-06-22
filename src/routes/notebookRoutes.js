@@ -8,6 +8,7 @@ const {
   getNotebookNoteById,
   getNotebookNotes,
   updateNotebookNote,
+  refreshNotebookStudents,
 } = require("../controllers/notebookController");
 
 router.use(authMiddleware, requireTeacher);
@@ -15,6 +16,7 @@ router.use(authMiddleware, requireTeacher);
 router.get("/", getNotebookNotes);
 router.post("/", createNotebookNote);
 router.get("/:noteId", getNotebookNoteById);
+router.post("/:noteId/refresh-students", refreshNotebookStudents);
 router.patch("/:noteId", updateNotebookNote);
 router.delete("/:noteId", deleteNotebookNote);
 
