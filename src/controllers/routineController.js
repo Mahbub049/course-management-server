@@ -1,6 +1,8 @@
 const Routine = require("../models/Routine");
 const Enrollment = require("../models/Enrollment");
 const CounsellingBooking = require("../models/CounsellingBooking");
+const User = require("../models/User");
+const { sendMail } = require("../utils/mailer");
 
 const DEFAULT_DAYS = ["Mon", "Tue", "Wed", "Thu"];
 
@@ -129,10 +131,40 @@ function normalizePayload(body = {}) {
   };
 }
 
+function buildCourseInfo(booking = {}) {
+  const course = booking.course && typeof booking.course === "object" ? booking.course : null;
+  const courseId =
+    course?._id?.toString?.() ||
+    course?.id?.toString?.() ||
+    (booking.course && typeof booking.course !== "object" ? booking.course.toString() : "");
+
+  const info = {
+    id: courseId,
+    code: cleanString(booking.courseCode || course?.code),
+    title: cleanString(booking.courseTitle || course?.title),
+    intake: cleanString(booking.intake || course?.intake),
+    section: cleanString(booking.section || course?.section),
+  };
+
+  return info;
+}
+
+function hasCourseInfo(courseInfo = {}) {
+  return Boolean(
+    courseInfo.id ||
+      courseInfo.code ||
+      courseInfo.title ||
+      courseInfo.intake ||
+      courseInfo.section
+  );
+}
+
 function formatBooking(booking) {
   const student = booking.student && typeof booking.student === "object"
     ? booking.student
     : null;
+  const courseInfo = buildCourseInfo(booking);
+  const hasAcademicInfo = hasCourseInfo(courseInfo);
 
   return {
     id: booking._id.toString(),
@@ -154,12 +186,18 @@ function formatBooking(booking) {
     alternateEnd: booking.alternateEnd || "",
     respondedAt: booking.respondedAt || null,
     createdAt: booking.createdAt || null,
+    intake: courseInfo.intake,
+    section: courseInfo.section,
+    course: hasAcademicInfo ? courseInfo : undefined,
     student: student
       ? {
           id: student._id?.toString?.() || "",
           name: student.name || "",
           roll: student.username || "",
           profileImage: student.profileImage || "",
+          intake: courseInfo.intake,
+          section: courseInfo.section,
+          course: hasAcademicInfo ? courseInfo : undefined,
         }
       : undefined,
   };
@@ -180,6 +218,89 @@ function getDateDayName(dateString) {
 
 function todayString() {
   return new Date().toISOString().slice(0, 10);
+}
+
+function escapeHtml(value = "") {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+function formatReadableDate(dateString = "") {
+  if (!dateString) return "Selected counselling date";
+  const date = new Date(`${dateString}T00:00:00.000Z`);
+  if (Number.isNaN(date.getTime())) return dateString;
+  return date.toLocaleDateString("en-GB", {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
+async function notifyTeacherAboutCounsellingRequest({ teacher, student, booking }) {
+  const teacherEmail = cleanString(teacher?.email).toLowerCase();
+
+  if (!teacherEmail || !process.env.BREVO_API_KEY) {
+    return;
+  }
+
+  const portalUrl = cleanString(process.env.CLIENT_URL || process.env.FRONTEND_URL || "").replace(/\/$/, "");
+  const counsellingUrl = portalUrl ? `${portalUrl}/teacher/counselling` : "";
+  const studentName = student?.name || "A student";
+  const studentRoll = student?.username || "";
+  const academicText = [
+    booking.intake ? `Intake ${booking.intake}` : "",
+    booking.section ? `Section ${booking.section}` : "",
+    booking.courseCode || "",
+  ].filter(Boolean).join(" · ");
+  const timeText = [booking.start, booking.end].filter(Boolean).join(" - ");
+  const subject = `New counselling request from ${studentName}`;
+
+  const html = `
+    <div style="font-family: Arial, sans-serif; color: #0f172a; line-height: 1.6; max-width: 640px; margin: 0 auto;">
+      <h2 style="margin: 0 0 12px; color: #047857;">New counselling request</h2>
+      <p>Dear ${escapeHtml(teacher?.name || "Teacher")},</p>
+      <p>You have received a new counselling request in the Marks Portal.</p>
+      <div style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 14px; padding: 16px; margin: 18px 0;">
+        <p style="margin: 0 0 8px;"><strong>Student:</strong> ${escapeHtml(studentName)}${studentRoll ? ` (${escapeHtml(studentRoll)})` : ""}</p>
+        ${academicText ? `<p style="margin: 0 0 8px;"><strong>Academic:</strong> ${escapeHtml(academicText)}</p>` : ""}
+        <p style="margin: 0 0 8px;"><strong>Date:</strong> ${escapeHtml(formatReadableDate(booking.date))}</p>
+        <p style="margin: 0 0 8px;"><strong>Time:</strong> ${escapeHtml(timeText || booking.slotLabel || "Selected slot")}</p>
+        <p style="margin: 0 0 8px;"><strong>Topic:</strong> ${escapeHtml(booking.topic)}</p>
+        ${booking.message ? `<p style="margin: 0;"><strong>Message:</strong> ${escapeHtml(booking.message)}</p>` : ""}
+      </div>
+      ${counsellingUrl ? `<p><a href="${escapeHtml(counsellingUrl)}" style="display: inline-block; background: #059669; color: #ffffff; padding: 10px 16px; border-radius: 10px; text-decoration: none; font-weight: 700;">Open counselling requests</a></p>` : ""}
+      <p style="font-size: 13px; color: #64748b;">This is an automatic notification from BUBT Marks Portal.</p>
+    </div>
+  `;
+
+  const text = [
+    `Dear ${teacher?.name || "Teacher"},`,
+    "You have received a new counselling request in the Marks Portal.",
+    `Student: ${studentName}${studentRoll ? ` (${studentRoll})` : ""}`,
+    academicText ? `Academic: ${academicText}` : "",
+    `Date: ${formatReadableDate(booking.date)}`,
+    `Time: ${timeText || booking.slotLabel || "Selected slot"}`,
+    `Topic: ${booking.topic}`,
+    booking.message ? `Message: ${booking.message}` : "",
+    counsellingUrl ? `Open: ${counsellingUrl}` : "",
+  ].filter(Boolean).join("\n");
+
+  try {
+    await sendMail({
+      to: teacherEmail,
+      subject,
+      html,
+      text,
+    });
+  } catch (error) {
+    console.error("Counselling email notification failed:", error.message);
+  }
 }
 
 function getSlotInfo(routine, day, slotId) {
@@ -250,11 +371,76 @@ function formatCounsellingSlots(routine) {
     });
 }
 
+function getStudentIdFromBooking(booking = {}) {
+  return booking.student?._id?.toString?.() || booking.student?.toString?.() || "";
+}
+
+function getCourseSnapshot(course = {}) {
+  if (!course) return null;
+
+  return {
+    id: course._id?.toString?.() || "",
+    code: course.code || "",
+    title: course.title || "",
+    intake: course.intake || "",
+    section: course.section || "",
+  };
+}
+
+async function getCourseContextByStudent(studentIds = [], teacherId) {
+  const uniqueStudentIds = [...new Set(studentIds.map(String).filter(Boolean))];
+  if (!uniqueStudentIds.length || !teacherId) return new Map();
+
+  const enrollments = await Enrollment.find({ student: { $in: uniqueStudentIds } })
+    .populate({
+      path: "course",
+      select: "code title intake section archived createdBy",
+    })
+    .sort({ createdAt: -1 })
+    .lean();
+
+  const byStudent = new Map();
+  enrollments.forEach((enrollment) => {
+    const course = enrollment.course;
+    if (!course || course.archived === true || String(course.createdBy) !== String(teacherId)) return;
+
+    const studentId = enrollment.student?.toString?.() || "";
+    if (!studentId || byStudent.has(studentId)) return;
+
+    byStudent.set(studentId, getCourseSnapshot(course));
+  });
+
+  return byStudent;
+}
+
+function applyCourseContext(booking = {}, courseByStudent = new Map()) {
+  const studentId = getStudentIdFromBooking(booking);
+  const fallbackCourse = courseByStudent.get(studentId) || null;
+  const storedCourse = booking.course && typeof booking.course === "object" ? getCourseSnapshot(booking.course) : null;
+  const courseInfo = {
+    ...(fallbackCourse || {}),
+    ...(storedCourse || {}),
+    code: cleanString(booking.courseCode || storedCourse?.code || fallbackCourse?.code),
+    title: cleanString(booking.courseTitle || storedCourse?.title || fallbackCourse?.title),
+    intake: cleanString(booking.intake || storedCourse?.intake || fallbackCourse?.intake),
+    section: cleanString(booking.section || storedCourse?.section || fallbackCourse?.section),
+  };
+
+  return {
+    ...booking,
+    course: booking.course || fallbackCourse || null,
+    courseCode: courseInfo.code,
+    courseTitle: courseInfo.title,
+    intake: courseInfo.intake,
+    section: courseInfo.section,
+  };
+}
+
 async function resolveStudentTeacher(studentId) {
   const enrollments = await Enrollment.find({ student: studentId })
     .populate({
       path: "course",
-      select: "code title section archived createdBy",
+      select: "code title section intake archived createdBy",
       populate: {
         path: "createdBy",
         select: "name email department designation profileImage",
@@ -273,9 +459,11 @@ async function resolveStudentTeacher(studentId) {
   const firstCourse = activeCourses[0];
   const teacher = firstCourse.createdBy;
   const teacherId = teacher?._id || teacher;
+  const selectedCourse = getCourseSnapshot(firstCourse);
 
   return {
     teacherId,
+    selectedCourse,
     teacher: teacher && typeof teacher === "object"
       ? {
           id: teacher._id?.toString?.() || String(teacherId),
@@ -297,6 +485,7 @@ async function resolveStudentTeacher(studentId) {
       id: course._id.toString(),
       code: course.code || "",
       title: course.title || "",
+      intake: course.intake || "",
       section: course.section || "",
     })),
   };
@@ -345,7 +534,7 @@ const saveMyRoutine = async (req, res) => {
 const getStudentCounsellingInfo = async (req, res) => {
   try {
     const studentId = req.user.userId;
-    const { teacherId, teacher, courses } = await resolveStudentTeacher(studentId);
+    const { teacherId, teacher, courses, selectedCourse } = await resolveStudentTeacher(studentId);
 
     if (!teacherId) {
       return res.json({
@@ -360,6 +549,7 @@ const getStudentCounsellingInfo = async (req, res) => {
     const [routine, bookings] = await Promise.all([
       Routine.findOne({ teacher: teacherId }).lean(),
       CounsellingBooking.find({ student: studentId, teacher: teacherId })
+        .populate("course", "code title intake section")
         .sort({ createdAt: -1 })
         .limit(50)
         .lean(),
@@ -378,7 +568,9 @@ const getStudentCounsellingInfo = async (req, res) => {
           }
         : null,
       counsellingSlots: formatCounsellingSlots(routine),
-      bookings: bookings.map(formatBooking),
+      bookings: bookings.map((booking) =>
+        formatBooking(applyCourseContext(booking, new Map([[String(studentId), selectedCourse]])))
+      ),
     });
   } catch (err) {
     console.error("getStudentCounsellingInfo error:", err);
@@ -389,7 +581,7 @@ const getStudentCounsellingInfo = async (req, res) => {
 const createStudentCounsellingBooking = async (req, res) => {
   try {
     const studentId = req.user.userId;
-    const { teacherId, teacher } = await resolveStudentTeacher(studentId);
+    const { teacherId, teacher, selectedCourse } = await resolveStudentTeacher(studentId);
 
     if (!teacherId) {
       return res.status(404).json({ message: "No course teacher found for this student" });
@@ -438,6 +630,11 @@ const createStudentCounsellingBooking = async (req, res) => {
       teacher: teacherId,
       student: studentId,
       routine: routine?._id || null,
+      course: selectedCourse?.id || null,
+      courseCode: selectedCourse?.code || "",
+      courseTitle: selectedCourse?.title || "",
+      intake: selectedCourse?.intake || "",
+      section: selectedCourse?.section || "",
       date,
       day,
       slotId,
@@ -447,6 +644,16 @@ const createStudentCounsellingBooking = async (req, res) => {
       topic,
       message,
       status: "pending",
+    });
+
+    const student = await User.findById(studentId)
+      .select("name username email")
+      .lean();
+
+    notifyTeacherAboutCounsellingRequest({
+      teacher,
+      student,
+      booking: booking.toObject(),
     });
 
     return res.status(201).json({
@@ -497,15 +704,22 @@ const getTeacherCounsellingBookings = async (req, res) => {
       Routine.findOne({ teacher: teacherId }).lean(),
       CounsellingBooking.find({ teacher: teacherId })
         .populate("student", "name username profileImage")
+        .populate("course", "code title intake section")
         .sort({ createdAt: -1 })
         .limit(200)
         .lean(),
     ]);
 
+    const studentIds = bookings.map(getStudentIdFromBooking).filter(Boolean);
+    const courseByStudent = await getCourseContextByStudent(studentIds, teacherId);
+    const formattedBookings = bookings.map((booking) =>
+      formatBooking(applyCourseContext(booking, courseByStudent))
+    );
+
     return res.json({
       counsellingSlots: formatCounsellingSlots(routine),
       timeSlots: formatRoutineTimeSlots(routine),
-      bookings: bookings.map(formatBooking),
+      bookings: formattedBookings,
     });
   } catch (err) {
     console.error("getTeacherCounsellingBookings error:", err);
@@ -575,6 +789,7 @@ const updateTeacherCounsellingBooking = async (req, res) => {
 
     await booking.save();
     await booking.populate("student", "name username profileImage");
+    await booking.populate("course", "code title intake section");
 
     return res.json({
       message: "Counselling booking updated",

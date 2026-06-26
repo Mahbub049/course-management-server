@@ -19,6 +19,32 @@ const counsellingBookingSchema = new mongoose.Schema(
       ref: "Routine",
       default: null,
     },
+    course: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Course",
+      default: null,
+      index: true,
+    },
+    courseCode: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    courseTitle: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    intake: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    section: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     date: {
       type: String,
       required: true,
