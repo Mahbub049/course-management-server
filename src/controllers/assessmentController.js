@@ -57,23 +57,92 @@ function getHybridExamLabel(key = '') {
     lab_mid: 'Lab Mid',
     theory_final: 'Theory Final',
     lab_final: 'Lab Final',
+    generic_mid: 'Mid',
+    generic_final: 'Final',
   };
 
   return labels[key] || 'Hybrid exam';
 }
 
-function validateHybridExamName(rawName = '') {
+const HYBRID_EXAM_MARKS = {
+  theory_mid: 20,
+  lab_mid: 10,
+  theory_final: 30,
+  lab_final: 10,
+  generic_mid: 30,
+  generic_final: 40,
+};
+
+const HYBRID_EXAM_SPLITS = {
+  generic_mid: {
+    totalMarks: 30,
+    label: 'Mid',
+    items: [
+      { key: 'theory_mid', name: 'Theory Mid', fullMarks: 20 },
+      { key: 'lab_mid', name: 'Lab Mid', fullMarks: 10 },
+    ],
+  },
+  generic_final: {
+    totalMarks: 40,
+    label: 'Final',
+    items: [
+      { key: 'theory_final', name: 'Theory Final', fullMarks: 30 },
+      { key: 'lab_final', name: 'Lab Final', fullMarks: 10 },
+    ],
+  },
+};
+
+function validateHybridExamName(rawName = '', { allowGeneric = false } = {}) {
   const key = getHybridExamKey(rawName);
 
-  if (key === 'generic_mid') {
+  if (!allowGeneric && key === 'generic_mid') {
     return 'For hybrid courses, please use either "Theory Mid" or "Lab Mid" instead of a generic Mid name.';
   }
 
-  if (key === 'generic_final') {
+  if (!allowGeneric && key === 'generic_final') {
     return 'For hybrid courses, please use either "Theory Final" or "Lab Final" instead of a generic Final name.';
   }
 
   return null;
+}
+
+function validateHybridExamFullMarks(rawName = '', rawFullMarks) {
+  const key = getHybridExamKey(rawName);
+  const expectedMarks = HYBRID_EXAM_MARKS[key];
+
+  if (expectedMarks == null) return null;
+
+  if (Number(rawFullMarks) !== expectedMarks) {
+    return `${getHybridExamLabel(key)} must have ${expectedMarks} marks for hybrid courses.`;
+  }
+
+  return null;
+}
+
+function getNextAssessmentOrder(existing = []) {
+  if (!existing.length) return 0;
+
+  const maxOrder = existing.reduce((max, item, index) => {
+    const value = Number(item?.order);
+    return Math.max(max, Number.isFinite(value) ? value : index);
+  }, -1);
+
+  return maxOrder + 1;
+}
+
+function getHybridSplitPayload(rawName = '', rawFullMarks) {
+  const key = getHybridExamKey(rawName);
+  const split = HYBRID_EXAM_SPLITS[key];
+
+  if (!split) return null;
+
+  if (Number(rawFullMarks) !== split.totalMarks) {
+    return {
+      error: `${split.label} must have ${split.totalMarks} marks before it can be split automatically.`,
+    };
+  }
+
+  return { key, ...split };
 }
 
 
@@ -392,9 +461,56 @@ const createAssessment = async (req, res) => {
     const courseType = String(course?.courseType || 'theory').toLowerCase();
 
     if (courseType === 'hybrid' && (newFlags.isMid || (newFlags.isFinal && !isAdvancedLabFinal))) {
+      const hybridSplit = getHybridSplitPayload(name, fullMarks);
+
+      if (hybridSplit?.error) {
+        return res.status(400).json({ message: hybridSplit.error });
+      }
+
+      if (hybridSplit) {
+        const existingKeys = new Set(
+          existing.map((a) => getHybridExamKey(a.name)).filter(Boolean)
+        );
+
+        const alreadyExistingItem = hybridSplit.items.find((item) =>
+          existingKeys.has(item.key)
+        );
+
+        if (alreadyExistingItem) {
+          return res.status(400).json({
+            message: `${getHybridExamLabel(alreadyExistingItem.key)} already exists for this hybrid course.`,
+          });
+        }
+
+        const baseOrder =
+          order != null ? Number(order) : getNextAssessmentOrder(existing);
+
+        const createdAssessments = await Assessment.insertMany(
+          hybridSplit.items.map((item, idx) => ({
+            course: courseId,
+            name: item.name,
+            fullMarks: item.fullMarks,
+            order: baseOrder + idx,
+            structureType: 'regular',
+            labFinalConfig: null,
+            submissionConfig: null,
+          }))
+        );
+
+        return res.status(201).json({
+          message: `${hybridSplit.label} created as separate theory and lab fields.`,
+          assessments: createdAssessments,
+        });
+      }
+
       const hybridNameError = validateHybridExamName(name);
       if (hybridNameError) {
         return res.status(400).json({ message: hybridNameError });
+      }
+
+      const hybridMarksError = validateHybridExamFullMarks(name, fullMarks);
+      if (hybridMarksError) {
+        return res.status(400).json({ message: hybridMarksError });
       }
 
       const hybridKey = getHybridExamKey(name);
@@ -621,6 +737,11 @@ const updateAssessment = async (req, res) => {
       const hybridNameError = validateHybridExamName(finalName);
       if (hybridNameError) {
         return res.status(400).json({ message: hybridNameError });
+      }
+
+      const hybridMarksError = validateHybridExamFullMarks(finalName, finalFullMarks);
+      if (hybridMarksError) {
+        return res.status(400).json({ message: hybridMarksError });
       }
 
       const hybridKey = getHybridExamKey(finalName);
