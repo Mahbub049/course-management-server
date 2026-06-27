@@ -68,6 +68,16 @@ const sanitizeClassTestPolicy = (raw = {}) => {
   };
 };
 
+const getMaxCtWeight = (courseType = 'theory') => {
+  return String(courseType || 'theory').toLowerCase() === 'hybrid' ? 25 : 15;
+};
+
+const getCtWeightLimitMessage = (courseType = 'theory', maxWeight) => {
+  return String(courseType || 'theory').toLowerCase() === 'hybrid'
+    ? `CT + Assignment + Attendance cannot cross 30. For hybrid courses, CT weight cannot be more than ${maxWeight}.`
+    : `CT + Assignment + Attendance cannot cross 30. For theory courses, CT weight cannot be more than ${maxWeight}.`;
+};
+
 const sanitizeComplaintSettings = (raw = {}, existing = {}) => {
   const allowStudentComplaints =
     raw?.allowStudentComplaints === undefined
@@ -257,7 +267,26 @@ const updateCourse = async (req, res) => {
     }
 
     if (classTestPolicy !== undefined) {
-      update.classTestPolicy = sanitizeClassTestPolicy(classTestPolicy);
+      const existingCourseForPolicy = await Course.findOne({ _id: id, createdBy: teacherId })
+        .select('courseType');
+
+      if (!existingCourseForPolicy) {
+        return res.status(404).json({ message: "Course not found" });
+      }
+
+      const sanitizedPolicy = sanitizeClassTestPolicy(classTestPolicy);
+      const nextCourseType = String(
+        update.courseType || existingCourseForPolicy.courseType || 'theory'
+      ).toLowerCase();
+      const maxCtWeight = getMaxCtWeight(nextCourseType);
+
+      if (nextCourseType !== 'lab' && sanitizedPolicy.totalWeight > maxCtWeight) {
+        return res.status(400).json({
+          message: getCtWeightLimitMessage(nextCourseType, maxCtWeight),
+        });
+      }
+
+      update.classTestPolicy = sanitizedPolicy;
     }
 
     if (projectFeature !== undefined) {
