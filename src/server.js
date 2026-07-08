@@ -25,9 +25,11 @@ const allowedOrigins = [
   'https://course-management-client-puce.vercel.app',
   'https://bubt-courses.vercel.app',
 
-  // Firebase alternate frontend
+  // Firebase frontends
   'https://bubt-courses.web.app',
   'https://bubt-courses.firebaseapp.com',
+  'https://bubt.web.app',
+  'https://bubt.firebaseapp.com',
 ];
 
 const corsOptions = {
