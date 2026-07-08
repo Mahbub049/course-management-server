@@ -475,6 +475,8 @@ const getTeacherAssessmentSubmissions = async (req, res) => {
           submittedAt: s.submittedAt,
           checkedAt: s.checkedAt,
           storageDeleted: !!s.storageDeleted,
+          source: s.source || 'student-login',
+          isPublicSubmission: s.source === 'public-link',
         };
       })
     );
@@ -1104,6 +1106,8 @@ if (!isSubmissionCurrentlyOpen(cfg)) {
       submittedAt: new Date(),
       checkedAt: null,
       storageDeleted: false,
+      source: 'student-login',
+      publicSubmissionLink: null,
     };
 
     let submission;

@@ -90,6 +90,17 @@ const labSubmissionSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    source: {
+      type: String,
+      enum: ['student-login', 'public-link'],
+      default: 'student-login',
+      index: true,
+    },
+    publicSubmissionLink: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'PublicSubmissionLink',
+      default: null,
+    },
   },
   { timestamps: true }
 );
