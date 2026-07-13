@@ -20,14 +20,23 @@ const getObeMarkEntry = async (req, res) => {
       ObeStudentMark.find({ course: courseId }),
     ]);
 
-    const students = enrollments.map((enr) => ({
-      studentId: enr.student?._id,
-      roll: enr.student?.username || '',
-      name: enr.student?.name || '',
-      email: enr.student?.email || null,
-    }));
+    const students = enrollments
+      .filter((enr) => enr.student?._id)
+      .map((enr) => ({
+        studentId: enr.student._id,
+        roll: enr.student.username || '',
+        name: enr.student.name || '',
+        email: enr.student.email || null,
+      }));
 
-    return res.json({ students, blueprints, marks });
+    const enrolledStudentIds = new Set(
+      students.map((student) => String(student.studentId))
+    );
+    const activeMarks = marks.filter((mark) =>
+      enrolledStudentIds.has(String(mark.student))
+    );
+
+    return res.json({ students, blueprints, marks: activeMarks });
   } catch (error) {
     console.error('getObeMarkEntry error', error);
     return res.status(500).json({ message: 'Server error' });

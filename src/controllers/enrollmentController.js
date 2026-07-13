@@ -6,6 +6,8 @@ const Enrollment = require("../models/Enrollment");
 const User = require("../models/User");
 const Course = require("../models/Course");
 const Mark = require("../models/Mark"); // ✅ NEW (needed to delete marks)
+const ObeStudentMark = require("../models/ObeStudentMark");
+const AttendanceSummary = require("../models/AttendanceSummary");
 const { sendMail } = require("../utils/mailer");
 
 // ---------------------------------------------
@@ -275,12 +277,18 @@ exports.removeStudentFromCourse = async (req, res) => {
 
     const studentId = enrollment.student;
 
-    // ✅ delete marks for this student in this course
-    await Mark.deleteMany({ course: courseId, student: studentId });
+    // Remove every course-level mark record that can keep the student visible
+    // in the standard marks and OBE workspaces.
+    await Promise.all([
+      Mark.deleteMany({ course: courseId, student: studentId }),
+      ObeStudentMark.deleteMany({ course: courseId, student: studentId }),
+      AttendanceSummary.deleteMany({ course: courseId, student: studentId }),
+      enrollment.deleteOne(),
+    ]);
 
-    await enrollment.deleteOne();
-
-    return res.json({ message: "Student removed from course (and marks deleted)." });
+    return res.json({
+      message: "Student removed from course and all related marks were deleted.",
+    });
   } catch (err) {
     console.error("Remove Student Error:", err);
     return res.status(500).json({ message: "Failed to remove student." });
@@ -303,15 +311,20 @@ exports.removeAllStudentsFromCourse = async (req, res) => {
       return res.status(404).json({ message: "Course not found (or not yours)." });
     }
 
-    const [enrResult, markResult] = await Promise.all([
-      Enrollment.deleteMany({ course: courseId }),
-      Mark.deleteMany({ course: courseId }),
-    ]);
+    const [enrResult, markResult, obeMarkResult, attendanceResult] =
+      await Promise.all([
+        Enrollment.deleteMany({ course: courseId }),
+        Mark.deleteMany({ course: courseId }),
+        ObeStudentMark.deleteMany({ course: courseId }),
+        AttendanceSummary.deleteMany({ course: courseId }),
+      ]);
 
     return res.json({
       message: "All students removed from course.",
       removedEnrollments: enrResult?.deletedCount || 0,
       deletedMarks: markResult?.deletedCount || 0,
+      deletedObeMarks: obeMarkResult?.deletedCount || 0,
+      deletedAttendanceSummaries: attendanceResult?.deletedCount || 0,
     });
   } catch (err) {
     console.error("Remove All Students Error:", err);

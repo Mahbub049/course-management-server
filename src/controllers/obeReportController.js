@@ -1312,19 +1312,29 @@ const getObeExportPayload = async (req, res) => {
       buildOutputData(courseId),
     ]);
 
-    const students = enrollments.map((record) => ({
-      studentId: String(record.student?._id || ""),
-      roll: record.student?.username || "",
-      name: record.student?.name || "",
-      email: record.student?.email || "",
-    }));
+    const students = enrollments
+      .filter((record) => record.student?._id)
+      .map((record) => ({
+        studentId: String(record.student._id),
+        roll: record.student.username || "",
+        name: record.student.name || "",
+        email: record.student.email || "",
+      }));
+
+    const enrolledStudentIds = new Set(
+      students.map((student) => String(student.studentId))
+    );
+    const activeMarks = marks.filter((mark) =>
+      enrolledStudentIds.has(String(mark.student))
+    );
 
     return res.json({
       course,
       setup: setup || null,
       blueprints,
       students,
-      marks,
+      marks: activeMarks,
+      continuousAssessment: output?.continuousAssessment || null,
       output,
     });
   } catch (error) {

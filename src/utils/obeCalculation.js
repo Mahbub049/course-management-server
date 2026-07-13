@@ -1,8 +1,13 @@
+const Course = require('../models/Course');
 const Enrollment = require('../models/Enrollment');
 const CourseOutcome = require('../models/CourseOutcome');
 const CourseObeConfig = require('../models/CourseObeConfig');
 const ObeAssessmentBlueprint = require('../models/ObeAssessmentBlueprint');
 const ObeStudentMark = require('../models/ObeStudentMark');
+const Assessment = require('../models/Assessment');
+const Mark = require('../models/Mark');
+const AttendanceSummary = require('../models/AttendanceSummary');
+const { buildContinuousAssessmentData } = require('./obeContinuousAssessment');
 
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const round4 = (value) => Math.round((Number(value) || 0) * 10000) / 10000;
@@ -30,12 +35,26 @@ const gradeFromPercent = (percent) => {
 };
 
 const buildOutputData = async (courseId) => {
-  const [enrollments, courseOutcomes, config, blueprints, markDocs] = await Promise.all([
+  const [
+    course,
+    enrollments,
+    courseOutcomes,
+    config,
+    blueprints,
+    markDocs,
+    assessments,
+    regularMarkDocs,
+    attendanceSummaries,
+  ] = await Promise.all([
+    Course.findById(courseId),
     Enrollment.find({ course: courseId }).populate('student'),
     CourseOutcome.find({ course: courseId, isActive: { $ne: false } }).sort({ order: 1, code: 1 }),
     CourseObeConfig.findOne({ course: courseId }),
     ObeAssessmentBlueprint.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
     ObeStudentMark.find({ course: courseId }),
+    Assessment.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
+    Mark.find({ course: courseId }),
+    AttendanceSummary.find({ course: courseId }),
   ]);
 
   const thresholdPercent = Number(config?.thresholdPercent ?? 40);
@@ -44,12 +63,36 @@ const buildOutputData = async (courseId) => {
   const poStatements = config?.poStatements || [];
   const psoStatements = config?.psoStatements || [];
 
-  const students = enrollments.map((enr) => ({
-    studentId: String(enr.student?._id || ''),
-    roll: enr.student?.username || '',
-    name: enr.student?.name || '',
-    email: enr.student?.email || null,
-  }));
+  const students = enrollments
+    .filter((enr) => enr.student?._id)
+    .map((enr) => ({
+      studentId: String(enr.student._id),
+      roll: enr.student.username || '',
+      name: enr.student.name || '',
+      email: enr.student.email || null,
+    }));
+
+  const enrolledStudentIds = new Set(students.map((student) => student.studentId));
+  const activeObeMarkDocs = markDocs.filter((doc) =>
+    enrolledStudentIds.has(String(doc.student))
+  );
+  const activeRegularMarkDocs = regularMarkDocs.filter((doc) =>
+    enrolledStudentIds.has(String(doc.student))
+  );
+  const activeAttendanceSummaries = attendanceSummaries.filter((row) =>
+    enrolledStudentIds.has(String(row.student))
+  );
+
+  const continuousAssessment = buildContinuousAssessmentData({
+    course: course || {},
+    students,
+    assessments,
+    markDocs: activeRegularMarkDocs,
+    attendanceSummaries: activeAttendanceSummaries,
+  });
+  const continuousByStudent = new Map(
+    (continuousAssessment.students || []).map((row) => [String(row.studentId), row])
+  );
 
   const blueprintById = new Map(blueprints.map((bp) => [String(bp._id), bp]));
   const outcomeList = courseOutcomes.map((co) => ({
@@ -59,25 +102,70 @@ const buildOutputData = async (courseId) => {
   }));
   const outcomeByCode = new Map(outcomeList.map((co) => [co.code, co]));
 
-  let totalPossibleMarks = 0;
+  let obeTotalPossibleMarks = 0;
   for (const bp of blueprints) {
-    totalPossibleMarks += Number(bp.totalMarks || 0);
+    obeTotalPossibleMarks += Number(bp.totalMarks || 0);
     for (const item of bp.items || []) {
       const bucket = outcomeByCode.get(item.coCode);
       if (bucket) bucket.maxMarks = round2(bucket.maxMarks + Number(item.marks || 0));
     }
   }
 
+  const examBlueprintIds = new Set(
+    blueprints
+      .filter((bp) => ['mid', 'midterm', 'final'].includes(String(bp.assessmentType || '').toLowerCase()))
+      .map((bp) => String(bp._id))
+  );
+  const useFixedContinuousAssessment = continuousAssessment.enabled === true;
+  const totalPossibleMarks = round2(
+    (useFixedContinuousAssessment ? Number(continuousAssessment.totalMarks || 30) : 0) +
+      blueprints.reduce((sum, bp) => {
+        if (useFixedContinuousAssessment && !examBlueprintIds.has(String(bp._id))) {
+          return sum;
+        }
+        return sum + Number(bp.totalMarks || 0);
+      }, 0)
+  );
+
   const markMap = new Map();
-  for (const doc of markDocs) {
+  for (const doc of activeObeMarkDocs) {
     const key = `${String(doc.student)}__${String(doc.blueprint)}`;
     markMap.set(key, doc);
   }
 
   const studentRows = students.map((student) => {
     const totalsByCo = Object.fromEntries(outcomeList.map((co) => [co.code, 0]));
-    let courseObtained = 0;
-    const assessmentTotals = [];
+    const continuousRow = continuousByStudent.get(student.studentId) || {
+      attendance: 0,
+      ct: 0,
+      assignment: 0,
+      total: 0,
+    };
+    let courseObtained = useFixedContinuousAssessment
+      ? Number(continuousRow.total || 0)
+      : 0;
+    const assessmentTotals = useFixedContinuousAssessment
+      ? [
+          {
+            blueprintId: 'continuous-attendance',
+            assessmentName: 'Attendance',
+            totalMarks: Number(continuousRow.attendance || 0),
+            maxMarks: 5,
+          },
+          {
+            blueprintId: 'continuous-ct',
+            assessmentName: 'Class Test',
+            totalMarks: Number(continuousRow.ct || 0),
+            maxMarks: 15,
+          },
+          {
+            blueprintId: 'continuous-assignment',
+            assessmentName: 'Assignment',
+            totalMarks: Number(continuousRow.assignment || 0),
+            maxMarks: 10,
+          },
+        ]
+      : [];
 
     for (const bp of blueprints) {
       const saved = markMap.get(`${student.studentId}__${String(bp._id)}`);
@@ -93,7 +181,9 @@ const buildOutputData = async (courseId) => {
       }
 
       blueprintTotal = round2(blueprintTotal);
-      courseObtained = round2(courseObtained + blueprintTotal);
+      if (!useFixedContinuousAssessment || examBlueprintIds.has(String(bp._id))) {
+        courseObtained = round2(courseObtained + blueprintTotal);
+      }
       assessmentTotals.push({
         blueprintId: String(bp._id),
         assessmentName: bp.assessmentName,
@@ -127,6 +217,14 @@ const buildOutputData = async (courseId) => {
       email: student.email,
       courseObtained,
       courseMaxMarks: round2(totalPossibleMarks),
+      continuousAssessment: useFixedContinuousAssessment
+        ? {
+            attendance: round2(continuousRow.attendance),
+            ct: round2(continuousRow.ct),
+            assignment: round2(continuousRow.assignment),
+            total: round2(continuousRow.total),
+          }
+        : null,
       totalPercent,
       scaledTotal,
       grade,
@@ -213,6 +311,8 @@ const buildOutputData = async (courseId) => {
     thresholdPercent,
     totalStudents,
     totalPossibleMarks: round2(totalPossibleMarks),
+    obeTotalPossibleMarks: round2(obeTotalPossibleMarks),
+    continuousAssessment,
     blueprints,
     students: studentRows,
     coAttainment,
