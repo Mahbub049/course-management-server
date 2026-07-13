@@ -32,7 +32,11 @@ const {
   publishAssessment,
 } = require("../controllers/assessmentController");
 
-const { getMarksForCourse, saveMarksForCourse } = require("../controllers/markController");
+const {
+  getMarksForCourse,
+  saveMarksForCourse,
+  syncMarksFromObe,
+} = require("../controllers/markController");
 
 
 const {
@@ -153,6 +157,7 @@ router.delete("/assessments/:assessmentId", ...teacherOnly, deleteAssessment);
 // ===================================================
 router.get("/:courseId/marks", ...teacherOnly, getMarksForCourse);
 router.post("/:courseId/marks", ...teacherOnly, saveMarksForCourse);
+router.post("/:courseId/marks/sync-from-obe", ...teacherOnly, syncMarksFromObe);
 
 
 // ===================================================

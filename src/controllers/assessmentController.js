@@ -408,6 +408,9 @@ const createAssessment = async (req, res) => {
     }
 
     const existing = await Assessment.find({ course: courseId });
+    const markEntryAssessments = existing.filter(
+      (assessment) => assessment?.structureType !== 'lab_submission'
+    );
 
     const newFlags = classifyByName(name);
     const isAdvancedLabFinal = structureType === 'lab_final';
@@ -441,7 +444,7 @@ const createAssessment = async (req, res) => {
         });
       }
 
-      const alreadyAdvancedLabFinal = existing.some(
+      const alreadyAdvancedLabFinal = markEntryAssessments.some(
         (a) => a.structureType === 'lab_final'
       );
 
@@ -460,124 +463,128 @@ const createAssessment = async (req, res) => {
 
     const courseType = String(course?.courseType || 'theory').toLowerCase();
 
-    if (courseType === 'hybrid' && (newFlags.isMid || (newFlags.isFinal && !isAdvancedLabFinal))) {
-      const hybridSplit = getHybridSplitPayload(name, fullMarks);
+    // Submission-only assessments are hidden from the marks-entry assessment list.
+    // Their names must not block Mid/Final/Attendance/Assignment/Presentation fields.
+    if (!isLabSubmission) {
+      if (courseType === 'hybrid' && (newFlags.isMid || (newFlags.isFinal && !isAdvancedLabFinal))) {
+        const hybridSplit = getHybridSplitPayload(name, fullMarks);
 
-      if (hybridSplit?.error) {
-        return res.status(400).json({ message: hybridSplit.error });
-      }
+        if (hybridSplit?.error) {
+          return res.status(400).json({ message: hybridSplit.error });
+        }
 
-      if (hybridSplit) {
-        const existingKeys = new Set(
-          existing.map((a) => getHybridExamKey(a.name)).filter(Boolean)
-        );
+        if (hybridSplit) {
+          const existingKeys = new Set(
+            markEntryAssessments.map((a) => getHybridExamKey(a.name)).filter(Boolean)
+          );
 
-        const alreadyExistingItem = hybridSplit.items.find((item) =>
-          existingKeys.has(item.key)
-        );
+          const alreadyExistingItem = hybridSplit.items.find((item) =>
+            existingKeys.has(item.key)
+          );
 
-        if (alreadyExistingItem) {
-          return res.status(400).json({
-            message: `${getHybridExamLabel(alreadyExistingItem.key)} already exists for this hybrid course.`,
+          if (alreadyExistingItem) {
+            return res.status(400).json({
+              message: `${getHybridExamLabel(alreadyExistingItem.key)} already exists for this hybrid course.`,
+            });
+          }
+
+          const baseOrder =
+            order != null ? Number(order) : getNextAssessmentOrder(markEntryAssessments);
+
+          const createdAssessments = await Assessment.insertMany(
+            hybridSplit.items.map((item, idx) => ({
+              course: courseId,
+              name: item.name,
+              fullMarks: item.fullMarks,
+              order: baseOrder + idx,
+              structureType: 'regular',
+              labFinalConfig: null,
+              submissionConfig: null,
+            }))
+          );
+
+          return res.status(201).json({
+            message: `${hybridSplit.label} created as separate theory and lab fields.`,
+            assessments: createdAssessments,
           });
         }
 
-        const baseOrder =
-          order != null ? Number(order) : getNextAssessmentOrder(existing);
+        const hybridNameError = validateHybridExamName(name);
+        if (hybridNameError) {
+          return res.status(400).json({ message: hybridNameError });
+        }
 
-        const createdAssessments = await Assessment.insertMany(
-          hybridSplit.items.map((item, idx) => ({
-            course: courseId,
-            name: item.name,
-            fullMarks: item.fullMarks,
-            order: baseOrder + idx,
-            structureType: 'regular',
-            labFinalConfig: null,
-            submissionConfig: null,
-          }))
+        const hybridMarksError = validateHybridExamFullMarks(name, fullMarks);
+        if (hybridMarksError) {
+          return res.status(400).json({ message: hybridMarksError });
+        }
+
+        const hybridKey = getHybridExamKey(name);
+        const alreadySameHybridExam = markEntryAssessments.some(
+          (a) => getHybridExamKey(a.name) === hybridKey
         );
 
-        return res.status(201).json({
-          message: `${hybridSplit.label} created as separate theory and lab fields.`,
-          assessments: createdAssessments,
-        });
+        if (hybridKey && alreadySameHybridExam) {
+          return res.status(400).json({
+            message: `${getHybridExamLabel(hybridKey)} already exists for this hybrid course.`,
+          });
+        }
+      } else {
+        if (newFlags.isMid) {
+          const alreadyMid = markEntryAssessments.some((a) => classifyByName(a.name).isMid);
+          if (alreadyMid) {
+            return res.status(400).json({
+              message:
+                'Mid already exists for this course. Only one Mid exam is allowed.',
+            });
+          }
+        }
+
+        if (newFlags.isFinal && !isAdvancedLabFinal) {
+          const alreadyFinal = markEntryAssessments.some((a) => classifyByName(a.name).isFinal);
+          if (alreadyFinal) {
+            return res.status(400).json({
+              message:
+                'Final already exists for this course. Only one Final exam is allowed.',
+            });
+          }
+        }
       }
 
-      const hybridNameError = validateHybridExamName(name);
-      if (hybridNameError) {
-        return res.status(400).json({ message: hybridNameError });
-      }
-
-      const hybridMarksError = validateHybridExamFullMarks(name, fullMarks);
-      if (hybridMarksError) {
-        return res.status(400).json({ message: hybridMarksError });
-      }
-
-      const hybridKey = getHybridExamKey(name);
-      const alreadySameHybridExam = existing.some(
-        (a) => getHybridExamKey(a.name) === hybridKey
-      );
-
-      if (hybridKey && alreadySameHybridExam) {
-        return res.status(400).json({
-          message: `${getHybridExamLabel(hybridKey)} already exists for this hybrid course.`,
-        });
-      }
-    } else {
-      if (newFlags.isMid) {
-        const alreadyMid = existing.some((a) => classifyByName(a.name).isMid);
-        if (alreadyMid) {
+      if (newFlags.isAttendance) {
+        const alreadyAtt = markEntryAssessments.some(
+          (a) => classifyByName(a.name).isAttendance
+        );
+        if (alreadyAtt) {
           return res.status(400).json({
             message:
-              'Mid already exists for this course. Only one Mid exam is allowed.',
+              'Attendance assessment already exists. Only one Attendance component is allowed.',
           });
         }
       }
 
-      if (newFlags.isFinal && !isAdvancedLabFinal) {
-        const alreadyFinal = existing.some((a) => classifyByName(a.name).isFinal);
-        if (alreadyFinal) {
+      if (newFlags.isAssignment) {
+        const alreadyAssign = markEntryAssessments.some(
+          (a) => classifyByName(a.name).isAssignment
+        );
+        if (alreadyAssign) {
           return res.status(400).json({
             message:
-              'Final already exists for this course. Only one Final exam is allowed.',
+              'Assignment assessment already exists. You can have at most one Assignment for this course.',
           });
         }
       }
-    }
 
-    if (newFlags.isAttendance) {
-      const alreadyAtt = existing.some(
-        (a) => classifyByName(a.name).isAttendance
-      );
-      if (alreadyAtt) {
-        return res.status(400).json({
-          message:
-            'Attendance assessment already exists. Only one Attendance component is allowed.',
-        });
-      }
-    }
-
-    if (newFlags.isAssignment) {
-      const alreadyAssign = existing.some(
-        (a) => classifyByName(a.name).isAssignment
-      );
-      if (alreadyAssign) {
-        return res.status(400).json({
-          message:
-            'Assignment assessment already exists. You can have at most one Assignment for this course.',
-        });
-      }
-    }
-
-    if (newFlags.isPresentation) {
-      const alreadyPres = existing.some(
-        (a) => classifyByName(a.name).isPresentation
-      );
-      if (alreadyPres) {
-        return res.status(400).json({
-          message:
-            'Presentation assessment already exists. You can have at most one Presentation for this course.',
-        });
+      if (newFlags.isPresentation) {
+        const alreadyPres = markEntryAssessments.some(
+          (a) => classifyByName(a.name).isPresentation
+        );
+        if (alreadyPres) {
+          return res.status(400).json({
+            message:
+              'Presentation assessment already exists. You can have at most one Presentation for this course.',
+          });
+        }
       }
     }
 
@@ -658,6 +665,9 @@ const updateAssessment = async (req, res) => {
       course: courseId,
       _id: { $ne: assessment._id },
     });
+    const markEntrySiblings = siblings.filter(
+      (item) => item?.structureType !== 'lab_submission'
+    );
 
     const newFlags = classifyByName(finalName);
     const isAdvancedLabFinal = finalStructureType === 'lab_final';
@@ -691,7 +701,7 @@ const updateAssessment = async (req, res) => {
         });
       }
 
-      const anotherAdvancedLabFinal = siblings.some(
+      const anotherAdvancedLabFinal = markEntrySiblings.some(
         (a) => a.structureType === 'lab_final'
       );
 
@@ -733,82 +743,84 @@ const updateAssessment = async (req, res) => {
 
     const courseType = String(assessment.course?.courseType || 'theory').toLowerCase();
 
-    if (courseType === 'hybrid' && (newFlags.isMid || (newFlags.isFinal && !isAdvancedLabFinal))) {
-      const hybridNameError = validateHybridExamName(finalName);
-      if (hybridNameError) {
-        return res.status(400).json({ message: hybridNameError });
+    if (!isLabSubmission) {
+      if (courseType === 'hybrid' && (newFlags.isMid || (newFlags.isFinal && !isAdvancedLabFinal))) {
+        const hybridNameError = validateHybridExamName(finalName);
+        if (hybridNameError) {
+          return res.status(400).json({ message: hybridNameError });
+        }
+
+        const hybridMarksError = validateHybridExamFullMarks(finalName, finalFullMarks);
+        if (hybridMarksError) {
+          return res.status(400).json({ message: hybridMarksError });
+        }
+
+        const hybridKey = getHybridExamKey(finalName);
+        const alreadySameHybridExam = markEntrySiblings.some(
+          (a) => getHybridExamKey(a.name) === hybridKey
+        );
+
+        if (hybridKey && alreadySameHybridExam) {
+          return res.status(400).json({
+            message: `${getHybridExamLabel(hybridKey)} already exists for this hybrid course.`,
+          });
+        }
+      } else {
+        if (newFlags.isMid) {
+          const alreadyMid = markEntrySiblings.some((a) => classifyByName(a.name).isMid);
+          if (alreadyMid) {
+            return res.status(400).json({
+              message:
+                'Mid already exists for this course. Only one Mid exam is allowed.',
+            });
+          }
+        }
+
+        if (newFlags.isFinal && !isAdvancedLabFinal) {
+          const alreadyFinal = markEntrySiblings.some((a) => classifyByName(a.name).isFinal);
+          if (alreadyFinal) {
+            return res.status(400).json({
+              message:
+                'Final already exists for this course. Only one Final exam is allowed.',
+            });
+          }
+        }
       }
 
-      const hybridMarksError = validateHybridExamFullMarks(finalName, finalFullMarks);
-      if (hybridMarksError) {
-        return res.status(400).json({ message: hybridMarksError });
-      }
-
-      const hybridKey = getHybridExamKey(finalName);
-      const alreadySameHybridExam = siblings.some(
-        (a) => getHybridExamKey(a.name) === hybridKey
-      );
-
-      if (hybridKey && alreadySameHybridExam) {
-        return res.status(400).json({
-          message: `${getHybridExamLabel(hybridKey)} already exists for this hybrid course.`,
-        });
-      }
-    } else {
-      if (newFlags.isMid) {
-        const alreadyMid = siblings.some((a) => classifyByName(a.name).isMid);
-        if (alreadyMid) {
+      if (newFlags.isAttendance) {
+        const alreadyAtt = markEntrySiblings.some(
+          (a) => classifyByName(a.name).isAttendance
+        );
+        if (alreadyAtt) {
           return res.status(400).json({
             message:
-              'Mid already exists for this course. Only one Mid exam is allowed.',
+              'Attendance assessment already exists. Only one Attendance component is allowed.',
           });
         }
       }
 
-      if (newFlags.isFinal && !isAdvancedLabFinal) {
-        const alreadyFinal = siblings.some((a) => classifyByName(a.name).isFinal);
-        if (alreadyFinal) {
+      if (newFlags.isAssignment) {
+        const alreadyAssign = markEntrySiblings.some(
+          (a) => classifyByName(a.name).isAssignment
+        );
+        if (alreadyAssign) {
           return res.status(400).json({
             message:
-              'Final already exists for this course. Only one Final exam is allowed.',
+              'Assignment assessment already exists. You can have at most one Assignment for this course.',
           });
         }
       }
-    }
 
-    if (newFlags.isAttendance) {
-      const alreadyAtt = siblings.some(
-        (a) => classifyByName(a.name).isAttendance
-      );
-      if (alreadyAtt) {
-        return res.status(400).json({
-          message:
-            'Attendance assessment already exists. Only one Attendance component is allowed.',
-        });
-      }
-    }
-
-    if (newFlags.isAssignment) {
-      const alreadyAssign = siblings.some(
-        (a) => classifyByName(a.name).isAssignment
-      );
-      if (alreadyAssign) {
-        return res.status(400).json({
-          message:
-            'Assignment assessment already exists. You can have at most one Assignment for this course.',
-        });
-      }
-    }
-
-    if (newFlags.isPresentation) {
-      const alreadyPres = siblings.some(
-        (a) => classifyByName(a.name).isPresentation
-      );
-      if (alreadyPres) {
-        return res.status(400).json({
-          message:
-            'Presentation assessment already exists. You can have at most one Presentation for this course.',
-        });
+      if (newFlags.isPresentation) {
+        const alreadyPres = markEntrySiblings.some(
+          (a) => classifyByName(a.name).isPresentation
+        );
+        if (alreadyPres) {
+          return res.status(400).json({
+            message:
+              'Presentation assessment already exists. You can have at most one Presentation for this course.',
+          });
+        }
       }
     }
 

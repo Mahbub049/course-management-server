@@ -1,6 +1,9 @@
 const Course = require("../models/Course");
 const Assessment = require("../models/Assessment");
 const Mark = require("../models/Mark");
+const Enrollment = require("../models/Enrollment");
+const ObeAssessmentBlueprint = require("../models/ObeAssessmentBlueprint");
+const ObeStudentMark = require("../models/ObeStudentMark");
 
 const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
@@ -34,6 +37,200 @@ function normalizeMarkStatus(value) {
   if (status === "i" || status === "incomplete") return "incomplete";
 
   return "present";
+}
+
+
+function normalizeAssessmentText(value = "") {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/\bterm\b/g, " ")
+    .replace(/\bexam(?:ination)?\b/g, " ")
+    .replace(/\bclass\s*test\b/g, " ct ")
+    .replace(/\bquiz\b/g, " ct ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function getAssessmentCategory(rawName = "", explicitType = "") {
+  const type = String(explicitType || "").trim().toLowerCase();
+  if (["ct", "assignment", "mid", "final", "attendance"].includes(type)) {
+    return type;
+  }
+
+  const name = normalizeAssessmentText(rawName);
+
+  if (/\b(attendance|att)\b/.test(name)) return "attendance";
+  if (/\bassignment\b/.test(name)) return "assignment";
+  if (/\bmid\b/.test(name)) return "mid";
+  if (/\bfinal\b/.test(name)) return "final";
+  if (/\b(class test|ct|quiz)\b/.test(name)) return "ct";
+
+  return "other";
+}
+
+function sameMarks(left, right) {
+  return Math.abs(Number(left || 0) - Number(right || 0)) < 1e-9;
+}
+
+function buildObeAssessmentMatches(blueprints = [], assessments = []) {
+  const orderedBlueprints = [...blueprints].sort((a, b) => {
+    const orderA = Number(a?.order ?? 0);
+    const orderB = Number(b?.order ?? 0);
+    if (orderA !== orderB) return orderA - orderB;
+    return new Date(a?.createdAt || 0) - new Date(b?.createdAt || 0);
+  });
+
+  const usableAssessments = assessments.filter(
+    (assessment) => assessment?.structureType !== "lab_final"
+  );
+
+  const matches = [];
+  const skipped = [];
+  const handledBlueprintIds = new Set();
+  const usedAssessmentIds = new Set();
+
+  const addMatch = (blueprint, assessment, matchMethod) => {
+    matches.push({ blueprint, assessment, matchMethod });
+    handledBlueprintIds.add(String(blueprint._id));
+    usedAssessmentIds.add(String(assessment._id));
+  };
+
+  const addSkipped = (blueprint, reason) => {
+    skipped.push({
+      blueprintId: String(blueprint._id),
+      blueprintName: blueprint.assessmentName,
+      blueprintType: blueprint.assessmentType,
+      totalMarks: Number(blueprint.totalMarks || 0),
+      reason,
+    });
+    handledBlueprintIds.add(String(blueprint._id));
+  };
+
+  // First preference: same normalized name and same full marks.
+  for (const blueprint of orderedBlueprints) {
+    const blueprintName = normalizeAssessmentText(blueprint.assessmentName);
+    const exactNameCandidates = usableAssessments.filter(
+      (assessment) =>
+        !usedAssessmentIds.has(String(assessment._id)) &&
+        normalizeAssessmentText(assessment.name) === blueprintName
+    );
+
+    const exactMatch = exactNameCandidates.find((assessment) =>
+      sameMarks(assessment.fullMarks, blueprint.totalMarks)
+    );
+
+    if (exactMatch) {
+      addMatch(blueprint, exactMatch, "name_and_marks");
+      continue;
+    }
+
+    if (exactNameCandidates.length > 0) {
+      addSkipped(
+        blueprint,
+        `A marksheet field with the same name exists, but its full marks do not match ${Number(
+          blueprint.totalMarks || 0
+        )}.`
+      );
+    }
+  }
+
+  // Second preference: unique type + same full marks for standard theory components.
+  for (const category of ["mid", "final", "assignment", "attendance"]) {
+    const pendingBlueprints = orderedBlueprints.filter(
+      (blueprint) =>
+        !handledBlueprintIds.has(String(blueprint._id)) &&
+        getAssessmentCategory(blueprint.assessmentName, blueprint.assessmentType) === category
+    );
+
+    const availableAssessments = usableAssessments.filter(
+      (assessment) =>
+        !usedAssessmentIds.has(String(assessment._id)) &&
+        getAssessmentCategory(assessment.name) === category
+    );
+
+    for (const blueprint of pendingBlueprints) {
+      const candidates = availableAssessments.filter(
+        (assessment) =>
+          !usedAssessmentIds.has(String(assessment._id)) &&
+          sameMarks(assessment.fullMarks, blueprint.totalMarks)
+      );
+
+      if (candidates.length !== 1) continue;
+
+      const candidate = candidates[0];
+      const competingBlueprints = pendingBlueprints.filter(
+        (otherBlueprint) =>
+          !handledBlueprintIds.has(String(otherBlueprint._id)) &&
+          sameMarks(otherBlueprint.totalMarks, candidate.fullMarks)
+      );
+
+      if (competingBlueprints.length === 1) {
+        addMatch(blueprint, candidate, "type_and_marks");
+      }
+    }
+  }
+
+  // CT names should usually match exactly. Allow a type fallback only when both sides are unique.
+  const remainingCtBlueprints = orderedBlueprints.filter(
+    (blueprint) =>
+      !handledBlueprintIds.has(String(blueprint._id)) &&
+      getAssessmentCategory(blueprint.assessmentName, blueprint.assessmentType) === "ct"
+  );
+  const remainingCtAssessments = usableAssessments.filter(
+    (assessment) =>
+      !usedAssessmentIds.has(String(assessment._id)) &&
+      getAssessmentCategory(assessment.name) === "ct"
+  );
+
+  if (remainingCtBlueprints.length === 1 && remainingCtAssessments.length === 1) {
+    const blueprint = remainingCtBlueprints[0];
+    const assessment = remainingCtAssessments[0];
+
+    if (sameMarks(assessment.fullMarks, blueprint.totalMarks)) {
+      addMatch(blueprint, assessment, "unique_ct_type_and_marks");
+    }
+  }
+
+  for (const blueprint of orderedBlueprints) {
+    if (handledBlueprintIds.has(String(blueprint._id))) continue;
+
+    const category = getAssessmentCategory(
+      blueprint.assessmentName,
+      blueprint.assessmentType
+    );
+
+    const sameTypeFields = usableAssessments.filter(
+      (assessment) =>
+        !usedAssessmentIds.has(String(assessment._id)) &&
+        getAssessmentCategory(assessment.name) === category
+    );
+
+    const sameMarkFields = sameTypeFields.filter((assessment) =>
+      sameMarks(assessment.fullMarks, blueprint.totalMarks)
+    );
+
+    if (sameMarkFields.length > 1) {
+      addSkipped(
+        blueprint,
+        "More than one marksheet field could match this OBE assessment. Rename the fields so the names are identical."
+      );
+    } else if (sameTypeFields.length > 0) {
+      addSkipped(
+        blueprint,
+        "No unused marksheet field has both a matching assessment type and matching full marks."
+      );
+    } else {
+      addSkipped(
+        blueprint,
+        "No corresponding marksheet assessment was found. Create the marksheet field first or use the same assessment name."
+      );
+    }
+  }
+
+  return { matches, skipped };
 }
 
 const getMarksForCourse = async (req, res) => {
@@ -188,7 +385,170 @@ const saveMarksForCourse = async (req, res) => {
   }
 };
 
+
+
+const syncMarksFromObe = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+
+    const course = await findTeacherCourse(courseId, req.user.userId);
+    if (!course) {
+      return res.status(404).json({ message: "Course not found" });
+    }
+
+    const courseType = String(course.courseType || "theory").toLowerCase();
+    if (courseType !== "theory") {
+      return res.status(400).json({
+        message: "OBE-to-marksheet fetching is currently available for theory courses only.",
+      });
+    }
+
+    const [assessments, blueprints, enrollments] = await Promise.all([
+      Assessment.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
+      ObeAssessmentBlueprint.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
+      Enrollment.find({ course: courseId }).select("student"),
+    ]);
+
+    if (!blueprints.length) {
+      return res.status(400).json({
+        message: "No OBE assessment blueprint was found for this course.",
+      });
+    }
+
+    if (!assessments.length) {
+      return res.status(400).json({
+        message: "No marksheet assessment field was found for this course.",
+      });
+    }
+
+    const { matches, skipped } = buildObeAssessmentMatches(
+      blueprints,
+      assessments
+    );
+
+    if (!matches.length) {
+      return res.status(400).json({
+        message:
+          "No OBE assessment could be matched with a marksheet field. Assessment name/type and full marks must correspond.",
+        importedRecords: 0,
+        matchedAssessments: [],
+        skippedBlueprints: skipped,
+      });
+    }
+
+    const enrolledStudentIds = new Set(
+      enrollments.map((row) => String(row.student))
+    );
+    const blueprintIds = matches.map(({ blueprint }) => blueprint._id);
+
+    const obeMarks = await ObeStudentMark.find({
+      course: courseId,
+      blueprint: { $in: blueprintIds },
+      student: { $in: [...enrolledStudentIds] },
+    }).select("student blueprint totalMarks");
+
+    const matchByBlueprintId = new Map(
+      matches.map((match) => [String(match.blueprint._id), match])
+    );
+    const importedCountByBlueprintId = new Map(
+      matches.map((match) => [String(match.blueprint._id), 0])
+    );
+
+    const bulkOps = [];
+
+    for (const obeMark of obeMarks) {
+      const studentId = String(obeMark.student);
+      if (!enrolledStudentIds.has(studentId)) continue;
+
+      const match = matchByBlueprintId.get(String(obeMark.blueprint));
+      if (!match) continue;
+
+      const obtainedMarks = round2(obeMark.totalMarks);
+      const assessmentFullMarks = Number(match.assessment.fullMarks || 0);
+
+      if (
+        !Number.isFinite(obtainedMarks) ||
+        obtainedMarks < 0 ||
+        obtainedMarks > assessmentFullMarks
+      ) {
+        return res.status(400).json({
+          message: `${match.blueprint.assessmentName} contains a total that is outside the matched marksheet field limit.`,
+        });
+      }
+
+      bulkOps.push({
+        updateOne: {
+          filter: {
+            course: courseId,
+            student: obeMark.student,
+            assessment: match.assessment._id,
+          },
+          update: {
+            $set: {
+              course: courseId,
+              student: obeMark.student,
+              assessment: match.assessment._id,
+              obtainedMarks,
+              status: "present",
+              subMarks: [],
+            },
+          },
+          upsert: true,
+        },
+      });
+
+      const blueprintId = String(match.blueprint._id);
+      importedCountByBlueprintId.set(
+        blueprintId,
+        Number(importedCountByBlueprintId.get(blueprintId) || 0) + 1
+      );
+    }
+
+    if (bulkOps.length > 0) {
+      await Mark.bulkWrite(bulkOps, { ordered: false });
+    }
+
+    const matchedAssessments = matches.map(
+      ({ blueprint, assessment, matchMethod }) => ({
+        blueprintId: String(blueprint._id),
+        blueprintName: blueprint.assessmentName,
+        assessmentId: String(assessment._id),
+        assessmentName: assessment.name,
+        fullMarks: Number(assessment.fullMarks || 0),
+        matchMethod,
+        importedStudents: Number(
+          importedCountByBlueprintId.get(String(blueprint._id)) || 0
+        ),
+      })
+    );
+
+    const matchedWithoutSavedMarks = matchedAssessments
+      .filter((row) => row.importedStudents === 0)
+      .map((row) => ({
+        blueprintId: row.blueprintId,
+        blueprintName: row.blueprintName,
+        blueprintType: getAssessmentCategory(row.blueprintName),
+        totalMarks: row.fullMarks,
+        reason: "The assessment matched, but no saved OBE student marks were found.",
+      }));
+
+    return res.json({
+      message:
+        bulkOps.length > 0
+          ? `${bulkOps.length} student assessment total(s) were fetched from OBE/CO-PO. Existing values in matched marksheet fields were replaced.`
+          : "Assessment fields matched, but there were no saved OBE student marks to import.",
+      importedRecords: bulkOps.length,
+      matchedAssessments,
+      skippedBlueprints: [...skipped, ...matchedWithoutSavedMarks],
+    });
+  } catch (err) {
+    console.error("Sync marks from OBE error", err);
+    return res.status(500).json({ message: "Server error" });
+  }
+};
+
 module.exports = {
   getMarksForCourse,
   saveMarksForCourse,
+  syncMarksFromObe,
 };
