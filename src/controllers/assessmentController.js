@@ -1,6 +1,7 @@
 const Course = require('../models/Course');
 const Assessment = require('../models/Assessment');
 const Mark = require('../models/Mark');
+const { getNotebookTargetLocks } = require('../utils/notebookMarkSync');
 
 // helper: ensure course belongs to current teacher
 const findTeacherCourse = async (courseId, teacherId) => {
@@ -239,6 +240,21 @@ async function getStructuredSyncMappings(courseId, targetAssessmentId = null) {
   return Assessment.find(query).select(
     '_id name fullMarks submissionConfig.linkedMarkAssessment submissionConfig.linkedMarkComponentKey'
   );
+}
+
+async function getDirectSubmissionMappings(courseId, targetAssessmentId) {
+  if (!targetAssessmentId) return [];
+
+  return Assessment.find({
+    course: courseId,
+    structureType: 'lab_submission',
+    'submissionConfig.linkedMarkAssessment': targetAssessmentId,
+    $or: [
+      { 'submissionConfig.linkedMarkComponentKey': '' },
+      { 'submissionConfig.linkedMarkComponentKey': null },
+      { 'submissionConfig.linkedMarkComponentKey': { $exists: false } },
+    ],
+  }).select('_id name fullMarks submissionConfig.linkedMarkAssessmentAutoCreated');
 }
 
 async function validateStructuredSyncMappings(
@@ -898,8 +914,36 @@ const getAssessmentsForCourse = async (req, res) => {
       createdAt: 1,
     });
 
-    const mappings = await getStructuredSyncMappings(courseId);
+    const [mappings, directSubmissionMappings, notebookMappings] =
+      await Promise.all([
+        getStructuredSyncMappings(courseId),
+        Assessment.find({
+          course: courseId,
+          structureType: 'lab_submission',
+          'submissionConfig.linkedMarkAssessment': { $ne: null },
+          $or: [
+            { 'submissionConfig.linkedMarkComponentKey': '' },
+            { 'submissionConfig.linkedMarkComponentKey': null },
+            {
+              'submissionConfig.linkedMarkComponentKey': {
+                $exists: false,
+              },
+            },
+          ],
+        }).select('submissionConfig.linkedMarkAssessment'),
+        getNotebookTargetLocks(courseId),
+      ]);
+
     const mappedKeysByAssessment = new Map();
+    const directLockedAssessmentIds = new Set(
+      directSubmissionMappings
+        .map((sourceAssessment) =>
+          String(
+            sourceAssessment?.submissionConfig?.linkedMarkAssessment || ''
+          )
+        )
+        .filter(Boolean)
+    );
 
     mappings.forEach((sourceAssessment) => {
       const targetId = String(
@@ -909,6 +953,22 @@ const getAssessmentsForCourse = async (req, res) => {
         sourceAssessment?.submissionConfig?.linkedMarkComponentKey || ''
       );
       if (!targetId || !componentKey) return;
+
+      if (!mappedKeysByAssessment.has(targetId)) {
+        mappedKeysByAssessment.set(targetId, new Set());
+      }
+      mappedKeysByAssessment.get(targetId).add(componentKey);
+    });
+
+    notebookMappings.forEach((mapping) => {
+      const targetId = String(mapping?.targetAssessment || '');
+      const componentKey = String(mapping?.targetComponentKey || '');
+      if (!targetId) return;
+
+      if (!componentKey) {
+        directLockedAssessmentIds.add(targetId);
+        return;
+      }
 
       if (!mappedKeysByAssessment.has(targetId)) {
         mappedKeysByAssessment.set(targetId, new Set());
@@ -928,6 +988,9 @@ const getAssessmentsForCourse = async (req, res) => {
           )
           .map((component) => String(component.key));
 
+        plain.syncLocked = directLockedAssessmentIds.has(
+          String(assessment._id)
+        );
         plain.syncLockedComponentKeys = Array.from(
           new Set([...(mappedKeys || []), ...legacyKeys])
         );
@@ -966,11 +1029,74 @@ const updateAssessment = async (req, res) => {
     }
 
     const courseId = assessment.course._id;
+    const notebookMappings = await getNotebookTargetLocks(courseId, {
+      targetAssessmentIds: [assessment._id],
+    });
+    const notebookDirectMappings = notebookMappings.filter(
+      (mapping) => !String(mapping?.targetComponentKey || '')
+    );
+    const notebookComponentMappings = notebookMappings.filter((mapping) =>
+      Boolean(String(mapping?.targetComponentKey || ''))
+    );
+
     const finalName = name != null ? String(name).trim() : assessment.name;
     const finalFullMarks =
       fullMarks != null ? Number(fullMarks) : Number(assessment.fullMarks);
     const finalStructureType =
       structureType || assessment.structureType || 'regular';
+
+    if (assessment.structureType === 'regular' && notebookDirectMappings.length) {
+      if (finalStructureType !== 'regular') {
+        return res.status(400).json({
+          message:
+            'This assessment receives marks from Notebook → Marks Sync. Remove that mapping before changing its assessment type.',
+        });
+      }
+
+      if (round2(finalFullMarks) !== round2(assessment.fullMarks)) {
+        return res.status(400).json({
+          message:
+            'This assessment receives marks from Notebook → Marks Sync. Remove the mapping before changing its full marks.',
+        });
+      }
+    }
+
+    if (assessment.structureType === 'regular') {
+      const directMappings = await getDirectSubmissionMappings(
+        courseId,
+        assessment._id
+      );
+
+      if (directMappings.length) {
+        if (finalStructureType !== 'regular') {
+          return res.status(400).json({
+            message:
+              'This Lab Assessment receives marks from Submissions → Marks Sync. Remove that mapping before changing its assessment type.',
+          });
+        }
+
+        const mismatchedSource = directMappings.find(
+          (sourceAssessment) =>
+            round2(sourceAssessment.fullMarks) !== round2(finalFullMarks)
+        );
+
+        if (mismatchedSource) {
+          return res.status(400).json({
+            message: `This Lab Assessment is synced with “${mismatchedSource.name}” (${Number(
+              mismatchedSource.fullMarks || 0
+            )} marks). Keep the same full marks or remove the mapping first.`,
+          });
+        }
+
+        const flags = classifyByName(finalName);
+        if (flags.isMid || flags.isFinal || flags.isAttendance) {
+          return res.status(400).json({
+            message:
+              'A directly synced Lab Assessment cannot be renamed as Mid, Final, or Attendance. Remove the mapping first.',
+          });
+        }
+      }
+    }
 
     if (
       assessment.structureType === 'lab_final' &&
@@ -988,6 +1114,13 @@ const updateAssessment = async (req, res) => {
           component?.linkedAssessmentId
       );
 
+      if (notebookComponentMappings.length) {
+        return res.status(400).json({
+          message:
+            'Remove all mappings from Notebook → Marks Sync before changing this structured assessment to another type.',
+        });
+      }
+
       if (mappings.length || hasLegacySubmissionLinks) {
         return res.status(400).json({
           message:
@@ -1000,10 +1133,8 @@ const updateAssessment = async (req, res) => {
       assessment.structureType === 'lab_submission' &&
       finalStructureType !== 'lab_submission'
     ) {
-      const hasConfiguredMapping = !!(
-        assessment?.submissionConfig?.linkedMarkAssessment &&
-        assessment?.submissionConfig?.linkedMarkComponentKey
-      );
+      const hasConfiguredMapping =
+        !!assessment?.submissionConfig?.linkedMarkAssessment;
       const hasLegacyMapping = await Assessment.exists({
         course: courseId,
         structureType: 'lab_final',
@@ -1066,6 +1197,25 @@ const updateAssessment = async (req, res) => {
       const configError = validateLabFinalConfig(configToValidate);
       if (configError) {
         return res.status(400).json({ message: configError });
+      }
+
+      if (notebookComponentMappings.length) {
+        const componentKeys = new Set(
+          getGenericComponents(configToValidate).map((component) =>
+            String(component?.key || '')
+          )
+        );
+        const removedMapping = notebookComponentMappings.find(
+          (mapping) =>
+            !componentKeys.has(String(mapping?.targetComponentKey || ''))
+        );
+
+        if (removedMapping) {
+          return res.status(400).json({
+            message:
+              'A structured component is connected to Notebook → Marks Sync. Remove that mapping before deleting the component.',
+          });
+        }
       }
 
       const structuredPeriod = getStructuredLabPeriod(configToValidate);
@@ -1145,6 +1295,8 @@ const updateAssessment = async (req, res) => {
         linkedMarkComponentKey: String(
           existingSubmissionConfig.linkedMarkComponentKey || ''
         ),
+        linkedMarkAssessmentAutoCreated:
+          !!existingSubmissionConfig.linkedMarkAssessmentAutoCreated,
       };
     } else {
       assessment.structureType = 'regular';
@@ -1282,6 +1434,32 @@ const deleteAssessment = async (req, res) => {
 
     if (!assessment.course.createdBy.equals(req.user.userId)) {
       return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const notebookMappings = await getNotebookTargetLocks(
+      assessment.course._id,
+      { targetAssessmentIds: [assessment._id] }
+    );
+
+    if (notebookMappings.length) {
+      return res.status(400).json({
+        message:
+          'This assessment receives marks from Notebook → Marks Sync. Remove the notebook mapping before deleting it.',
+      });
+    }
+
+    if (assessment.structureType === 'regular') {
+      const directMappings = await getDirectSubmissionMappings(
+        assessment.course._id,
+        assessment._id
+      );
+
+      if (directMappings.length) {
+        return res.status(400).json({
+          message:
+            'This Lab Assessment receives marks from Submissions → Marks Sync. Remove the mapping before deleting it.',
+        });
+      }
     }
 
     if (assessment.structureType === 'lab_final') {

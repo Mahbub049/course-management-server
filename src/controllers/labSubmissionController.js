@@ -139,14 +139,16 @@ function normalizeSubmissionAssessment(a, markSyncOverride = null) {
     closedReason: getSubmissionClosedReason(cfg),
     markSync:
       markSyncOverride || {
-        targetAssessmentId: cfg.linkedMarkComponentKey
-          ? String(cfg.linkedMarkAssessment || '')
-          : '',
+        targetAssessmentId: String(cfg.linkedMarkAssessment || ''),
         targetComponentKey: String(cfg.linkedMarkComponentKey || ''),
-        isConfigured: !!(
-          cfg.linkedMarkAssessment && cfg.linkedMarkComponentKey
-        ),
+        targetType: cfg.linkedMarkAssessment
+          ? cfg.linkedMarkComponentKey
+            ? 'structured'
+            : 'regular'
+          : '',
+        isConfigured: !!cfg.linkedMarkAssessment,
         isLegacy: false,
+        isAutoCreated: !!cfg.linkedMarkAssessmentAutoCreated,
       },
     createdAt: a.createdAt || null,
     updatedAt: a.updatedAt || null,
@@ -189,6 +191,99 @@ function getStructuredComponents(config = {}) {
   return Array.isArray(config?.genericComponents)
     ? config.genericComponents
     : [];
+}
+
+function isRegularLabAssessmentTarget(assessment) {
+  if (assessment?.structureType !== 'regular') return false;
+
+  const name = String(assessment?.name || '').trim().toLowerCase();
+  if (!name) return false;
+
+  return !(
+    name.includes('mid') ||
+    name.includes('final') ||
+    name.includes('attendance') ||
+    name.includes('attend') ||
+    name.includes('att.')
+  );
+}
+
+function deriveRegularLabAssessmentName(sourceName = '') {
+  let name = String(sourceName || '')
+    .replace(/\bsubmission\b/gi, ' ')
+    .replace(/\b(mid|final|attendance)\b/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .replace(/\s*[-–—:]\s*$/g, '')
+    .trim();
+
+  if (!name) name = 'Lab Assessment';
+  if (!/\blab\b/i.test(name)) name = `Lab Assessment - ${name}`;
+  return name.slice(0, 160);
+}
+
+async function getUniqueAssessmentName(courseId, requestedName) {
+  const base = String(requestedName || '').trim() || 'Lab Assessment';
+  let candidate = base;
+  let suffix = 2;
+
+  while (await Assessment.exists({ course: courseId, name: candidate })) {
+    candidate = `${base} (${suffix})`;
+    suffix += 1;
+  }
+
+  return candidate;
+}
+
+async function getNextMarkEntryOrder(courseId) {
+  const latest = await Assessment.findOne({
+    course: courseId,
+    structureType: { $ne: 'lab_submission' },
+  })
+    .sort({ order: -1, createdAt: -1 })
+    .select('order');
+
+  return Number(latest?.order || 0) + 1;
+}
+
+async function removeRegularTargetMarks(courseId, assessmentId) {
+  if (!assessmentId) return;
+  await Mark.deleteMany({ course: courseId, assessment: assessmentId });
+}
+
+async function syncMarkIntoRegularTarget({
+  courseId,
+  studentId,
+  targetAssessment,
+  awardedMarks,
+}) {
+  if (!targetAssessment) return false;
+
+  await Mark.findOneAndUpdate(
+    {
+      course: courseId,
+      student: studentId,
+      assessment: targetAssessment._id,
+    },
+    {
+      $set: {
+        course: courseId,
+        student: studentId,
+        assessment: targetAssessment._id,
+        obtainedMarks: Math.max(
+          0,
+          Math.min(
+            Number(awardedMarks || 0),
+            Number(targetAssessment.fullMarks || 0)
+          )
+        ),
+        status: 'present',
+        subMarks: [],
+      },
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  return true;
 }
 
 
@@ -574,22 +669,32 @@ const getTeacherSubmissionAssessments = async (req, res) => {
         const configuredKey = String(
           a?.submissionConfig?.linkedMarkComponentKey || ''
         );
-        const configuredTarget = configuredKey
-          ? String(a?.submissionConfig?.linkedMarkAssessment || '')
-          : '';
-        const markSync =
-          configuredTarget && configuredKey
+        const configuredTarget = String(
+          a?.submissionConfig?.linkedMarkAssessment || ''
+        );
+        const markSync = configuredTarget
+          ? {
+              targetAssessmentId: configuredTarget,
+              targetComponentKey: configuredKey,
+              targetType: configuredKey ? 'structured' : 'regular',
+              isConfigured: true,
+              isLegacy: false,
+              isAutoCreated: !!a?.submissionConfig
+                ?.linkedMarkAssessmentAutoCreated,
+            }
+          : legacyMapping
             ? {
-                targetAssessmentId: configuredTarget,
-                targetComponentKey: configuredKey,
-                isConfigured: true,
-                isLegacy: false,
+                ...legacyMapping,
+                targetType: 'structured',
+                isAutoCreated: false,
               }
-            : legacyMapping || {
+            : {
                 targetAssessmentId: '',
                 targetComponentKey: '',
+                targetType: '',
                 isConfigured: false,
                 isLegacy: false,
+                isAutoCreated: false,
               };
 
         return {
@@ -615,68 +720,136 @@ const getTeacherMarksSyncConfiguration = async (req, res) => {
       return res.status(404).json({ message: 'Course not found.' });
     }
 
-    const [submissionAssessments, structuredAssessments] = await Promise.all([
-      Assessment.find({
-        course: courseId,
-        structureType: 'lab_submission',
-      }).sort({ order: 1, createdAt: 1 }),
-      Assessment.find({
-        course: courseId,
-        structureType: 'lab_final',
-        'labFinalConfig.mode': 'components',
-      }).sort({ order: 1, createdAt: 1 }),
-    ]);
+    const [submissionAssessments, structuredAssessments, regularAssessments] =
+      await Promise.all([
+        Assessment.find({
+          course: courseId,
+          structureType: 'lab_submission',
+        }).sort({ order: 1, createdAt: 1 }),
+        Assessment.find({
+          course: courseId,
+          structureType: 'lab_final',
+          'labFinalConfig.mode': 'components',
+        }).sort({ order: 1, createdAt: 1 }),
+        Assessment.find({
+          course: courseId,
+          structureType: 'regular',
+        }).sort({ order: 1, createdAt: 1 }),
+      ]);
 
     const legacyMappingBySource =
       buildLegacyDirectMappingBySource(structuredAssessments);
 
+    const directlyLinkedRegularIds = new Set(
+      submissionAssessments
+        .filter(
+          (assessment) =>
+            assessment?.submissionConfig?.linkedMarkAssessment &&
+            !assessment?.submissionConfig?.linkedMarkComponentKey
+        )
+        .map((assessment) =>
+          String(assessment.submissionConfig.linkedMarkAssessment)
+        )
+    );
+
+    const usableRegularAssessments = regularAssessments.filter(
+      (assessment) =>
+        isRegularLabAssessmentTarget(assessment) ||
+        directlyLinkedRegularIds.has(String(assessment._id))
+    );
+
+    const regularIdSet = new Set(
+      usableRegularAssessments.map((assessment) => String(assessment._id))
+    );
+    const structuredIdSet = new Set(
+      structuredAssessments.map((assessment) => String(assessment._id))
+    );
+
     const mappingBySource = new Map();
     submissionAssessments.forEach((sourceAssessment) => {
+      const configuredTarget = String(
+        sourceAssessment?.submissionConfig?.linkedMarkAssessment || ''
+      );
       const configuredKey = String(
         sourceAssessment?.submissionConfig?.linkedMarkComponentKey || ''
       );
-      const configuredTarget = configuredKey
-        ? String(
-            sourceAssessment?.submissionConfig?.linkedMarkAssessment || ''
-          )
-        : '';
 
-      const mapping =
-        configuredTarget && configuredKey
+      let mapping = null;
+
+      if (configuredTarget) {
+        mapping = {
+          targetAssessmentId: configuredTarget,
+          targetComponentKey: configuredKey,
+          targetType: configuredKey ? 'structured' : 'regular',
+          isConfigured: true,
+          isLegacy: false,
+          isAutoCreated: !!sourceAssessment?.submissionConfig
+            ?.linkedMarkAssessmentAutoCreated,
+          targetExists: configuredKey
+            ? structuredIdSet.has(configuredTarget)
+            : regularIdSet.has(configuredTarget),
+        };
+      } else {
+        const legacy = legacyMappingBySource.get(String(sourceAssessment._id));
+        mapping = legacy
           ? {
-              targetAssessmentId: configuredTarget,
-              targetComponentKey: configuredKey,
-              isConfigured: true,
-              isLegacy: false,
+              ...legacy,
+              targetType: 'structured',
+              isAutoCreated: false,
+              targetExists: true,
             }
-          : legacyMappingBySource.get(String(sourceAssessment._id)) || {
+          : {
               targetAssessmentId: '',
               targetComponentKey: '',
+              targetType: '',
               isConfigured: false,
               isLegacy: false,
+              isAutoCreated: false,
+              targetExists: true,
             };
+      }
 
       mappingBySource.set(String(sourceAssessment._id), mapping);
     });
 
-    const sourceByDestination = new Map();
+    const sourceByStructuredDestination = new Map();
+    const sourceByRegularDestination = new Map();
+
     mappingBySource.forEach((mapping, sourceId) => {
-      if (!mapping.targetAssessmentId || !mapping.targetComponentKey) return;
-      sourceByDestination.set(
-        `${mapping.targetAssessmentId}:${mapping.targetComponentKey}`,
-        sourceId
-      );
+      if (!mapping.targetAssessmentId) return;
+
+      if (mapping.targetComponentKey) {
+        sourceByStructuredDestination.set(
+          `${mapping.targetAssessmentId}:${mapping.targetComponentKey}`,
+          sourceId
+        );
+      } else {
+        sourceByRegularDestination.set(mapping.targetAssessmentId, sourceId);
+      }
     });
 
-    const targets = structuredAssessments.map((assessment) => ({
+    const regularTargets = usableRegularAssessments.map((assessment) => ({
       id: String(assessment._id),
       name: assessment.name,
+      kind: 'regular',
+      period: 'lab',
+      fullMarks: Number(assessment.fullMarks || 0),
+      mappedSubmissionAssessmentId:
+        sourceByRegularDestination.get(String(assessment._id)) || '',
+      components: [],
+    }));
+
+    const structuredTargets = structuredAssessments.map((assessment) => ({
+      id: String(assessment._id),
+      name: assessment.name,
+      kind: 'structured',
       period:
         String(assessment?.labFinalConfig?.period || 'final').toLowerCase() ===
         'mid'
           ? 'mid'
           : 'final',
       fullMarks: Number(assessment.fullMarks || 0),
+      mappedSubmissionAssessmentId: '',
       components: [...getStructuredComponents(assessment.labFinalConfig)]
         .sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0))
         .map((component) => ({
@@ -684,7 +857,7 @@ const getTeacherMarksSyncConfiguration = async (req, res) => {
           name: component.name,
           marks: Number(component.marks || 0),
           mappedSubmissionAssessmentId:
-            sourceByDestination.get(
+            sourceByStructuredDestination.get(
               `${String(assessment._id)}:${String(component.key)}`
             ) || '',
         })),
@@ -695,7 +868,7 @@ const getTeacherMarksSyncConfiguration = async (req, res) => {
         ...normalizeSubmissionAssessment(assessment),
         mapping: mappingBySource.get(String(assessment._id)),
       })),
-      targets,
+      targets: [...regularTargets, ...structuredTargets],
     });
   } catch (err) {
     console.error('getTeacherMarksSyncConfiguration error', err);
@@ -708,11 +881,16 @@ const getTeacherMarksSyncConfiguration = async (req, res) => {
 const updateTeacherMarksSyncConfiguration = async (req, res) => {
   try {
     const { courseId, assessmentId } = req.params;
-    const targetAssessmentId = String(
+    const requestedTargetAssessmentId = String(
       req.body?.targetAssessmentId || ''
     ).trim();
-    const targetComponentKey = String(
+    const requestedTargetComponentKey = String(
       req.body?.targetComponentKey || ''
+    ).trim();
+    const createRegularAssessment =
+      req.body?.createRegularAssessment === true;
+    const requestedRegularAssessmentName = String(
+      req.body?.regularAssessmentName || ''
     ).trim();
 
     const course = await ensureTeacherCourse(courseId, req.user.userId);
@@ -732,112 +910,245 @@ const updateTeacherMarksSyncConfiguration = async (req, res) => {
         .json({ message: 'Submission assessment not found.' });
     }
 
-    const oldTargets = await getStructuredSubmissionTargets(
-      courseId,
-      assessmentId
-    );
-    const oldTarget = oldTargets[0] || null;
-    const existingRegularAssessment =
-      await getExistingLinkedRegularAssessment(sourceAssessment);
-
-    if (!!targetAssessmentId !== !!targetComponentKey) {
+    if (
+      createRegularAssessment &&
+      (requestedTargetAssessmentId || requestedTargetComponentKey)
+    ) {
       return res.status(400).json({
         message:
-          'Choose both a target structured assessment and a target component.',
+          'Choose either an existing destination or create a new Lab Assessment, not both.',
       });
     }
 
+    if (!requestedTargetAssessmentId && requestedTargetComponentKey) {
+      return res.status(400).json({
+        message: 'Choose a target assessment before selecting a component.',
+      });
+    }
+
+    const legacyStructuredTargets = await getStructuredSubmissionTargets(
+      courseId,
+      assessmentId
+    );
+    const legacyStructuredTarget = legacyStructuredTargets[0] || null;
+    const existingRegularAssessment =
+      await getExistingLinkedRegularAssessment(sourceAssessment);
+
+    const configuredOldTargetId = String(
+      sourceAssessment?.submissionConfig?.linkedMarkAssessment || ''
+    );
+    const configuredOldComponentKey = String(
+      sourceAssessment?.submissionConfig?.linkedMarkComponentKey || ''
+    );
+    const oldTargetId =
+      configuredOldTargetId ||
+      String(legacyStructuredTarget?.assessment?._id || '');
+    const oldComponentKey =
+      configuredOldComponentKey ||
+      String(legacyStructuredTarget?.component?.key || '');
+    const oldAutoCreated = !!sourceAssessment?.submissionConfig
+      ?.linkedMarkAssessmentAutoCreated;
+
     let targetAssessment = null;
     let targetComponent = null;
+    let targetType = '';
+    let targetAssessmentId = requestedTargetAssessmentId;
+    let targetComponentKey = requestedTargetComponentKey;
+    let targetAutoCreated = false;
+    let createdAssessment = null;
 
-    if (targetAssessmentId && targetComponentKey) {
+    if (requestedTargetAssessmentId) {
       targetAssessment = await Assessment.findOne({
-        _id: targetAssessmentId,
+        _id: requestedTargetAssessmentId,
         course: courseId,
-        structureType: 'lab_final',
-        'labFinalConfig.mode': 'components',
+        structureType: { $in: ['regular', 'lab_final'] },
       });
 
       if (!targetAssessment) {
         return res.status(404).json({
-          message: 'The selected structured Lab Mid/Final was not found.',
+          message: 'The selected destination assessment was not found.',
         });
       }
 
-      targetComponent = getStructuredComponents(
-        targetAssessment.labFinalConfig
-      ).find(
-        (component) =>
-          String(component?.key || '') === targetComponentKey
-      );
+      if (targetAssessment.structureType === 'lab_final') {
+        targetType = 'structured';
 
-      if (!targetComponent) {
-        return res.status(404).json({
-          message: 'The selected target component was not found.',
-        });
-      }
+        if (
+          targetAssessment?.labFinalConfig?.mode !== 'components' ||
+          !targetComponentKey
+        ) {
+          return res.status(400).json({
+            message:
+              'Choose the exact component under the selected Structured Lab Mid/Final.',
+          });
+        }
 
-      if (
-        round2(sourceAssessment.fullMarks) !==
-        round2(targetComponent.marks)
-      ) {
-        return res.status(400).json({
-          message: `“${sourceAssessment.name}” has ${Number(
-            sourceAssessment.fullMarks || 0
-          )} marks, but “${targetComponent.name}” has ${Number(
-            targetComponent.marks || 0
-          )}. Both full marks must match.`,
-        });
-      }
+        targetComponent = getStructuredComponents(
+          targetAssessment.labFinalConfig
+        ).find(
+          (component) =>
+            String(component?.key || '') === targetComponentKey
+        );
 
-      const duplicateMapping = await Assessment.findOne({
-        _id: { $ne: sourceAssessment._id },
-        course: courseId,
-        structureType: 'lab_submission',
-        'submissionConfig.linkedMarkAssessment': targetAssessmentId,
-        'submissionConfig.linkedMarkComponentKey': targetComponentKey,
-      }).select('_id name');
+        if (!targetComponent) {
+          return res.status(404).json({
+            message: 'The selected target component was not found.',
+          });
+        }
 
-      const legacyLinkedSourceId = String(
-        targetComponent?.linkedAssessmentId || ''
-      );
+        if (
+          round2(sourceAssessment.fullMarks) !==
+          round2(targetComponent.marks)
+        ) {
+          return res.status(400).json({
+            message: `“${sourceAssessment.name}” has ${Number(
+              sourceAssessment.fullMarks || 0
+            )} marks, but “${targetComponent.name}” has ${Number(
+              targetComponent.marks || 0
+            )}. Both full marks must match.`,
+          });
+        }
 
-      if (
-        duplicateMapping ||
-        (legacyLinkedSourceId &&
-          legacyLinkedSourceId !== String(sourceAssessment._id))
-      ) {
-        return res.status(400).json({
-          message:
-            'That component is already connected to another submission assessment.',
-        });
+        const duplicateMapping = await Assessment.findOne({
+          _id: { $ne: sourceAssessment._id },
+          course: courseId,
+          structureType: 'lab_submission',
+          'submissionConfig.linkedMarkAssessment': targetAssessmentId,
+          'submissionConfig.linkedMarkComponentKey': targetComponentKey,
+        }).select('_id name');
+
+        const legacyLinkedSourceId = String(
+          targetComponent?.linkedAssessmentId || ''
+        );
+
+        if (
+          duplicateMapping ||
+          (legacyLinkedSourceId &&
+            legacyLinkedSourceId !== String(sourceAssessment._id))
+        ) {
+          return res.status(400).json({
+            message:
+              'That component is already connected to another submission assessment.',
+          });
+        }
+      } else {
+        targetType = 'regular';
+        targetComponentKey = '';
+
+        if (!isRegularLabAssessmentTarget(targetAssessment)) {
+          return res.status(400).json({
+            message:
+              'Only a regular Lab Assessment can be used as a direct destination. Mid, Final, and Attendance must not be selected here.',
+          });
+        }
+
+        if (
+          round2(sourceAssessment.fullMarks) !==
+          round2(targetAssessment.fullMarks)
+        ) {
+          return res.status(400).json({
+            message: `“${sourceAssessment.name}” has ${Number(
+              sourceAssessment.fullMarks || 0
+            )} marks, but “${targetAssessment.name}” has ${Number(
+              targetAssessment.fullMarks || 0
+            )}. Both full marks must match.`,
+          });
+        }
+
+        const duplicateDirectMapping = await Assessment.findOne({
+          _id: { $ne: sourceAssessment._id },
+          course: courseId,
+          structureType: 'lab_submission',
+          'submissionConfig.linkedMarkAssessment': targetAssessmentId,
+          $or: [
+            { 'submissionConfig.linkedMarkComponentKey': '' },
+            { 'submissionConfig.linkedMarkComponentKey': null },
+            { 'submissionConfig.linkedMarkComponentKey': { $exists: false } },
+          ],
+        }).select('_id name');
+
+        if (duplicateDirectMapping) {
+          return res.status(400).json({
+            message:
+              'That Lab Assessment is already connected to another submission assessment.',
+          });
+        }
       }
     }
 
-    const oldTargetId = String(oldTarget?.assessment?._id || '');
-    const oldComponentKey = String(oldTarget?.component?.key || '');
+    if (createRegularAssessment) {
+      targetType = 'regular';
+      targetComponentKey = '';
+
+      const preferredName =
+        requestedRegularAssessmentName ||
+        deriveRegularLabAssessmentName(sourceAssessment.name);
+      const nameProbe = { structureType: 'regular', name: preferredName };
+
+      if (!isRegularLabAssessmentTarget(nameProbe)) {
+        return res.status(400).json({
+          message:
+            'The new direct destination must be a Lab Assessment name. Please remove Mid, Final, or Attendance from the name.',
+        });
+      }
+
+      const uniqueName = await getUniqueAssessmentName(
+        courseId,
+        preferredName
+      );
+      const nextOrder = await getNextMarkEntryOrder(courseId);
+
+      targetAssessment = await Assessment.create({
+        course: courseId,
+        name: uniqueName,
+        fullMarks: Number(sourceAssessment.fullMarks || 0),
+        order: nextOrder,
+        structureType: 'regular',
+        labFinalConfig: null,
+        submissionConfig: null,
+      });
+
+      targetAssessmentId = String(targetAssessment._id);
+      targetAutoCreated = true;
+      createdAssessment = {
+        id: targetAssessmentId,
+        name: targetAssessment.name,
+        fullMarks: Number(targetAssessment.fullMarks || 0),
+      };
+    }
+
+    if (
+      targetType === 'regular' &&
+      targetAssessmentId &&
+      targetAssessmentId === oldTargetId &&
+      !oldComponentKey
+    ) {
+      targetAutoCreated = oldAutoCreated;
+    }
+
     const mappingChanged =
+      createRegularAssessment ||
       oldTargetId !== targetAssessmentId ||
       oldComponentKey !== targetComponentKey;
 
-    if (mappingChanged && oldTargetId && oldComponentKey) {
-      await removeStructuredComponentMarksForAllStudents({
-        courseId,
-        targetAssessmentId: oldTargetId,
-        componentKey: oldComponentKey,
-      });
-    }
+    if (mappingChanged && oldTargetId) {
+      if (oldComponentKey) {
+        await removeStructuredComponentMarksForAllStudents({
+          courseId,
+          targetAssessmentId: oldTargetId,
+          componentKey: oldComponentKey,
+        });
+      } else {
+        await removeRegularTargetMarks(courseId, oldTargetId);
 
-    if (existingRegularAssessment) {
-      await Mark.deleteMany({
-        course: courseId,
-        assessment: existingRegularAssessment._id,
-      });
-      await Assessment.deleteOne({
-        _id: existingRegularAssessment._id,
-        course: courseId,
-        structureType: 'regular',
-      });
+        if (oldAutoCreated) {
+          await Assessment.deleteOne({
+            _id: oldTargetId,
+            course: courseId,
+            structureType: 'regular',
+          });
+        }
+      }
     }
 
     await clearLegacyDirectSubmissionLink(courseId, assessmentId);
@@ -850,6 +1161,8 @@ const updateTeacherMarksSyncConfiguration = async (req, res) => {
       targetAssessmentId || null;
     sourceAssessment.submissionConfig.linkedMarkComponentKey =
       targetComponentKey || '';
+    sourceAssessment.submissionConfig.linkedMarkAssessmentAutoCreated =
+      !!targetAssessmentId && targetAutoCreated;
     await sourceAssessment.save();
 
     const submissions = await LabSubmission.find({
@@ -869,8 +1182,10 @@ const updateTeacherMarksSyncConfiguration = async (req, res) => {
         mapping: {
           targetAssessmentId: '',
           targetComponentKey: '',
+          targetType: '',
           isConfigured: false,
           isLegacy: false,
+          isAutoCreated: false,
         },
       });
     }
@@ -885,12 +1200,21 @@ const updateTeacherMarksSyncConfiguration = async (req, res) => {
         continue;
       }
 
-      await syncMarkIntoStructuredTargets({
-        courseId,
-        studentId: submission.student,
-        submissionAssessmentId: assessmentId,
-        awardedMarks: submission.awardedMarks,
-      });
+      if (targetType === 'structured') {
+        await syncMarkIntoStructuredTargets({
+          courseId,
+          studentId: submission.student,
+          submissionAssessmentId: assessmentId,
+          awardedMarks: submission.awardedMarks,
+        });
+      } else {
+        await syncMarkIntoRegularTarget({
+          courseId,
+          studentId: submission.student,
+          targetAssessment,
+          awardedMarks: submission.awardedMarks,
+        });
+      }
 
       submission.syncedToMarks = true;
       submission.syncedAt = new Date();
@@ -898,14 +1222,26 @@ const updateTeacherMarksSyncConfiguration = async (req, res) => {
       syncedCount += 1;
     }
 
+    const destinationLabel =
+      targetType === 'structured'
+        ? `${targetAssessment.name} → ${targetComponent.name}`
+        : targetAssessment.name;
+
     return res.json({
-      message: `Marks sync mapping saved. ${syncedCount} existing mark(s) synchronized.`,
+      message: `${
+        createdAssessment
+          ? `Lab Assessment “${createdAssessment.name}” created and connected.`
+          : `Marks mapping connected to “${destinationLabel}”.`
+      } ${syncedCount} existing mark(s) synchronized.`,
       mapping: {
         targetAssessmentId,
         targetComponentKey,
+        targetType,
         isConfigured: true,
         isLegacy: false,
+        isAutoCreated: targetAutoCreated,
       },
+      createdAssessment,
     });
   } catch (err) {
     console.error('updateTeacherMarksSyncConfiguration error', err);
@@ -971,6 +1307,19 @@ const updateTeacherSubmissionAssessment = async (req, res) => {
           return res.status(400).json({
             message:
               'This submission is linked to a structured lab component. Unlink it before changing full marks, or keep both marks equal.',
+          });
+        }
+
+        const linkedRegularAssessment =
+          await getExistingLinkedRegularAssessment(assessment);
+        if (
+          linkedRegularAssessment &&
+          round2(linkedRegularAssessment.fullMarks) !== round2(nextFullMarks)
+        ) {
+          return res.status(400).json({
+            message: `This submission is directly synced with “${linkedRegularAssessment.name}” (${Number(
+              linkedRegularAssessment.fullMarks || 0
+            )} marks). Keep both full marks equal or remove the mapping first.`,
           });
         }
 
@@ -1088,11 +1437,14 @@ const deleteTeacherSubmissionAssessment = async (req, res) => {
         course: courseId,
         assessment: linkedRegularAssessmentId,
       });
-      await Assessment.deleteOne({
-        _id: linkedRegularAssessmentId,
-        course: courseId,
-        structureType: 'regular',
-      });
+
+      if (assessment?.submissionConfig?.linkedMarkAssessmentAutoCreated) {
+        await Assessment.deleteOne({
+          _id: linkedRegularAssessmentId,
+          course: courseId,
+          structureType: 'regular',
+        });
+      }
     }
 
     await Assessment.deleteOne({ _id: assessmentId });

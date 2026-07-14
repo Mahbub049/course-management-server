@@ -226,6 +226,10 @@ const submissionConfigSchema = new mongoose.Schema(
       default: '',
       trim: true,
     },
+    linkedMarkAssessmentAutoCreated: {
+      type: Boolean,
+      default: false,
+    },
   },
   { _id: false }
 );

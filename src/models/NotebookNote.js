@@ -74,6 +74,27 @@ const evaluationRowSchema = new mongoose.Schema(
   { _id: false }
 );
 
+
+const markSyncMappingSchema = new mongoose.Schema(
+  {
+    id: { type: String, trim: true, required: true },
+    sourceType: {
+      type: String,
+      enum: ["blank", "total"],
+      default: "blank",
+    },
+    sourceFieldId: { type: String, trim: true, default: "" },
+    sourceLabel: { type: String, trim: true, default: "" },
+    targetAssessment: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Assessment",
+      required: true,
+    },
+    targetComponentKey: { type: String, trim: true, default: "" },
+  },
+  { _id: false }
+);
+
 const notebookNoteSchema = new mongoose.Schema(
   {
     teacher: {
@@ -117,6 +138,11 @@ const notebookNoteSchema = new mongoose.Schema(
     },
     evaluationRows: {
       type: [evaluationRowSchema],
+      default: [],
+    },
+
+    markSyncMappings: {
+      type: [markSyncMappingSchema],
       default: [],
     },
     content: {

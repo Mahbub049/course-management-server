@@ -4,6 +4,7 @@ const Mark = require("../models/Mark");
 const Enrollment = require("../models/Enrollment");
 const ObeAssessmentBlueprint = require("../models/ObeAssessmentBlueprint");
 const ObeStudentMark = require("../models/ObeStudentMark");
+const { getNotebookTargetLocks } = require("../utils/notebookMarkSync");
 
 const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
@@ -331,19 +332,22 @@ const saveMarksForCourse = async (req, res) => {
     });
 
     const assessmentMap = new Map(assessments.map((a) => [String(a._id), a]));
-    const mappedSubmissionAssessments = await Assessment.find({
-      course: courseId,
-      structureType: "lab_submission",
-      "submissionConfig.linkedMarkAssessment": { $in: assessmentIds },
-      "submissionConfig.linkedMarkComponentKey": {
-        $exists: true,
-        $nin: [null, ""],
-      },
-    }).select(
-      "submissionConfig.linkedMarkAssessment submissionConfig.linkedMarkComponentKey"
-    );
+    const [mappedSubmissionAssessments, notebookMappings] = await Promise.all([
+      Assessment.find({
+        course: courseId,
+        structureType: "lab_submission",
+        "submissionConfig.linkedMarkAssessment": { $in: assessmentIds },
+      }).select(
+        "submissionConfig.linkedMarkAssessment submissionConfig.linkedMarkComponentKey"
+      ),
+      getNotebookTargetLocks(courseId, {
+        targetAssessmentIds: assessmentIds,
+      }),
+    ]);
 
     const mappedKeysByAssessment = new Map();
+    const directLockedAssessmentIds = new Set();
+
     mappedSubmissionAssessments.forEach((sourceAssessment) => {
       const targetId = String(
         sourceAssessment?.submissionConfig?.linkedMarkAssessment || ""
@@ -351,7 +355,25 @@ const saveMarksForCourse = async (req, res) => {
       const componentKey = String(
         sourceAssessment?.submissionConfig?.linkedMarkComponentKey || ""
       );
-      if (!targetId || !componentKey) return;
+      if (!targetId) return;
+      if (!componentKey) {
+        directLockedAssessmentIds.add(targetId);
+        return;
+      }
+      if (!mappedKeysByAssessment.has(targetId)) {
+        mappedKeysByAssessment.set(targetId, new Set());
+      }
+      mappedKeysByAssessment.get(targetId).add(componentKey);
+    });
+
+    notebookMappings.forEach((mapping) => {
+      const targetId = String(mapping?.targetAssessment || "");
+      const componentKey = String(mapping?.targetComponentKey || "");
+      if (!targetId) return;
+      if (!componentKey) {
+        directLockedAssessmentIds.add(targetId);
+        return;
+      }
       if (!mappedKeysByAssessment.has(targetId)) {
         mappedKeysByAssessment.set(targetId, new Set());
       }
@@ -364,7 +386,7 @@ const saveMarksForCourse = async (req, res) => {
       course: courseId,
       assessment: { $in: assessmentIds },
       student: { $in: studentIds },
-    }).select("student assessment subMarks");
+    }).select("student assessment obtainedMarks subMarks status");
     const existingMarkMap = new Map(
       existingMarks.map((mark) => [
         `${String(mark.student)}:${String(mark.assessment)}`,
@@ -379,6 +401,30 @@ const saveMarksForCourse = async (req, res) => {
         const assessment = assessmentMap.get(String(assessmentId));
 
         if (!studentId || !assessmentId || !assessment) return null;
+
+        if (
+          assessment.structureType !== "lab_final" &&
+          directLockedAssessmentIds.has(String(assessmentId))
+        ) {
+          const existingMark = existingMarkMap.get(
+            `${String(studentId)}:${String(assessmentId)}`
+          );
+
+          if (!existingMark) return null;
+
+          return {
+            studentId,
+            assessmentId,
+            obtainedMarks: round2(existingMark.obtainedMarks || 0),
+            status: normalizeMarkStatus(existingMark.status),
+            subMarks: Array.isArray(existingMark.subMarks)
+              ? existingMark.subMarks.map((item) => ({
+                  key: String(item?.key || ""),
+                  obtainedMarks: Number(item?.obtainedMarks || 0),
+                }))
+              : [],
+          };
+        }
 
         const rawStatus =
           String(m?.obtainedMarks || "").trim().toUpperCase() === "A"

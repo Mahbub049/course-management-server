@@ -2,6 +2,11 @@ const mongoose = require("mongoose");
 const NotebookNote = require("../models/NotebookNote");
 const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
+const {
+  getNotebookMarkSyncConfig,
+  sanitizeAndValidateMappings,
+  syncNotebookMappings,
+} = require("../utils/notebookMarkSync");
 
 const DEFAULT_SETTINGS = {
   includeRoll: true,
@@ -189,6 +194,15 @@ const formatNote = (note) => {
     _id: obj._id?.toString?.() || obj.id,
     teacher: obj.teacher?.toString?.() || obj.teacher,
     course: obj.course && typeof obj.course === "object" ? formatCourse(obj.course) : obj.course || null,
+    markSyncMappings: Array.isArray(obj.markSyncMappings)
+      ? obj.markSyncMappings.map((mapping) => ({
+          ...mapping,
+          targetAssessment:
+            mapping?.targetAssessment?.toString?.() ||
+            mapping?.targetAssessment ||
+            "",
+        }))
+      : [],
   };
 };
 
@@ -378,6 +392,14 @@ exports.updateNotebookNote = async (req, res) => {
 
     await note.save();
 
+    if (note.type === "evaluation" && note.markSyncMappings?.length) {
+      try {
+        await syncNotebookMappings(note);
+      } catch (syncError) {
+        console.error("automatic notebook mark sync error", syncError);
+      }
+    }
+
     const populated = await NotebookNote.findById(note._id).populate(
       "course",
       "code title section semester year courseType"
@@ -461,6 +483,117 @@ exports.refreshNotebookStudents = async (req, res) => {
   } catch (err) {
     console.error("refreshNotebookStudents error", err);
     return res.status(500).json({ message: "Failed to refresh student data." });
+  }
+};
+
+
+exports.getNotebookMarkSync = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const { noteId } = req.params;
+
+    if (!isValidObjectId(noteId)) {
+      return res.status(400).json({ message: "Invalid note id." });
+    }
+
+    const note = await NotebookNote.findOne({
+      _id: noteId,
+      teacher: teacherId,
+    });
+
+    if (!note) {
+      return res.status(404).json({ message: "Notebook note not found." });
+    }
+
+    if (note.type !== "evaluation") {
+      return res.status(400).json({
+        message: "Marks Sync is available only for evaluation sheets.",
+      });
+    }
+
+    const config = await getNotebookMarkSyncConfig(note);
+    return res.json(config);
+  } catch (err) {
+    console.error("getNotebookMarkSync error", err);
+    return res.status(500).json({
+      message: err?.message || "Failed to load notebook marks sync.",
+    });
+  }
+};
+
+exports.saveNotebookMarkSync = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const { noteId } = req.params;
+
+    if (!isValidObjectId(noteId)) {
+      return res.status(400).json({ message: "Invalid note id." });
+    }
+
+    const note = await NotebookNote.findOne({
+      _id: noteId,
+      teacher: teacherId,
+    });
+
+    if (!note) {
+      return res.status(404).json({ message: "Notebook note not found." });
+    }
+
+    const mappings = await sanitizeAndValidateMappings(
+      note,
+      req.body?.mappings
+    );
+
+    note.markSyncMappings = mappings;
+    await note.save();
+
+    const summary = await syncNotebookMappings(note);
+    const config = await getNotebookMarkSyncConfig(note);
+
+    return res.json({
+      message:
+        mappings.length > 0
+          ? "Notebook marks mapping saved and synchronized."
+          : "Notebook marks mappings removed. Existing marks were kept.",
+      summary,
+      ...config,
+    });
+  } catch (err) {
+    console.error("saveNotebookMarkSync error", err);
+    return res.status(err?.statusCode || 500).json({
+      message: err?.message || "Failed to save notebook marks mapping.",
+    });
+  }
+};
+
+exports.syncNotebookMarks = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const { noteId } = req.params;
+
+    if (!isValidObjectId(noteId)) {
+      return res.status(400).json({ message: "Invalid note id." });
+    }
+
+    const note = await NotebookNote.findOne({
+      _id: noteId,
+      teacher: teacherId,
+    });
+
+    if (!note) {
+      return res.status(404).json({ message: "Notebook note not found." });
+    }
+
+    const summary = await syncNotebookMappings(note);
+    return res.json({
+      message: summary.message,
+      summary,
+    });
+  } catch (err) {
+    console.error("syncNotebookMarks error", err);
+    return res.status(err?.statusCode || 500).json({
+      message: err?.message || "Failed to synchronize notebook marks.",
+    });
   }
 };
 
