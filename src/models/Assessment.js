@@ -176,12 +176,13 @@ const submissionConfigSchema = new mongoose.Schema(
     },
     allowedExtensions: {
       type: [String],
-      default: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'zip', 'c', 'cpp', 'java', 'py', 'js', 'jsx', 'html', 'css'],
+      default: ['pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'txt', 'csv', 'json', 'md', 'xml', 'zip', 'png', 'jpg', 'jpeg', 'c', 'cpp', 'java', 'sql', 'py', 'js', 'jsx', 'ts', 'tsx', 'html', 'css', 'php', 'sh'],
     },
     maxFileSizeMB: {
       type: Number,
       default: 10,
       min: 1,
+      max: Number(process.env.LAB_SUBMISSION_UPLOAD_LIMIT_MB || 50),
     },
     allowResubmission: {
       type: Boolean,

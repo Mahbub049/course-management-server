@@ -42,9 +42,10 @@ function getStructuredAssessmentItems(assessment, mappedComponentKeys = new Set(
       items.push({
         key: String(component.key),
         fullMarks: Number(component.marks || 0),
-        readOnly:
+        synced:
           mappedComponentKeys.has(String(component.key)) ||
           component.sourceType === "submission",
+        readOnly: false,
       });
     });
     return items;
@@ -346,7 +347,6 @@ const saveMarksForCourse = async (req, res) => {
     ]);
 
     const mappedKeysByAssessment = new Map();
-    const directLockedAssessmentIds = new Set();
 
     mappedSubmissionAssessments.forEach((sourceAssessment) => {
       const targetId = String(
@@ -355,11 +355,7 @@ const saveMarksForCourse = async (req, res) => {
       const componentKey = String(
         sourceAssessment?.submissionConfig?.linkedMarkComponentKey || ""
       );
-      if (!targetId) return;
-      if (!componentKey) {
-        directLockedAssessmentIds.add(targetId);
-        return;
-      }
+      if (!targetId || !componentKey) return;
       if (!mappedKeysByAssessment.has(targetId)) {
         mappedKeysByAssessment.set(targetId, new Set());
       }
@@ -369,11 +365,7 @@ const saveMarksForCourse = async (req, res) => {
     notebookMappings.forEach((mapping) => {
       const targetId = String(mapping?.targetAssessment || "");
       const componentKey = String(mapping?.targetComponentKey || "");
-      if (!targetId) return;
-      if (!componentKey) {
-        directLockedAssessmentIds.add(targetId);
-        return;
-      }
+      if (!targetId || !componentKey) return;
       if (!mappedKeysByAssessment.has(targetId)) {
         mappedKeysByAssessment.set(targetId, new Set());
       }
@@ -401,30 +393,6 @@ const saveMarksForCourse = async (req, res) => {
         const assessment = assessmentMap.get(String(assessmentId));
 
         if (!studentId || !assessmentId || !assessment) return null;
-
-        if (
-          assessment.structureType !== "lab_final" &&
-          directLockedAssessmentIds.has(String(assessmentId))
-        ) {
-          const existingMark = existingMarkMap.get(
-            `${String(studentId)}:${String(assessmentId)}`
-          );
-
-          if (!existingMark) return null;
-
-          return {
-            studentId,
-            assessmentId,
-            obtainedMarks: round2(existingMark.obtainedMarks || 0),
-            status: normalizeMarkStatus(existingMark.status),
-            subMarks: Array.isArray(existingMark.subMarks)
-              ? existingMark.subMarks.map((item) => ({
-                  key: String(item?.key || ""),
-                  obtainedMarks: Number(item?.obtainedMarks || 0),
-                }))
-              : [],
-          };
-        }
 
         const rawStatus =
           String(m?.obtainedMarks || "").trim().toUpperCase() === "A"
@@ -462,13 +430,9 @@ const saveMarksForCourse = async (req, res) => {
             const requestedValue = requestedMap.has(item.key)
               ? requestedMap.get(item.key)
               : existingSubMarkMap.get(item.key) || 0;
-            const obtainedMarks = item.readOnly
-              ? existingSubMarkMap.get(item.key) || 0
-              : requestedValue;
-
             return {
               key: item.key,
-              obtainedMarks: Number(obtainedMarks || 0),
+              obtainedMarks: Number(requestedValue || 0),
             };
           });
         }

@@ -12,23 +12,51 @@ const DEFAULT_ALLOWED_EXTENSIONS = [
   'pdf',
   'doc',
   'docx',
-  'zip',
   'xls',
   'xlsx',
   'ppt',
   'pptx',
   'txt',
+  'csv',
+  'json',
+  'md',
+  'xml',
+  'zip',
+  'png',
+  'jpg',
+  'jpeg',
   'c',
   'cpp',
   'java',
+  'sql',
   'py',
   'js',
   'jsx',
+  'ts',
+  'tsx',
   'html',
   'css',
+  'php',
+  'sh',
 ];
 
 const EXTENSION_PATTERN = /^[a-z0-9][a-z0-9_+-]{0,15}$/;
+const MAX_SUBMISSION_FILE_SIZE_MB = Math.max(
+  1,
+  Number(process.env.LAB_SUBMISSION_UPLOAD_LIMIT_MB || 50)
+);
+
+function parseSubmissionFileSizeLimit(value, fallback = 10) {
+  const parsed = Number(value ?? fallback);
+  if (
+    !Number.isFinite(parsed) ||
+    parsed < 1 ||
+    parsed > MAX_SUBMISSION_FILE_SIZE_MB
+  ) {
+    return null;
+  }
+  return parsed;
+}
 
 function sanitizeExtension(value = '') {
   const ext = String(value || '')
@@ -587,6 +615,16 @@ const createTeacherSubmissionAssessment = async (req, res) => {
       return res.status(400).json({ message: 'Assessment name is required.' });
     }
 
+    const maxFileSizeMB = parseSubmissionFileSizeLimit(
+      submissionConfig.maxFileSizeMB,
+      10
+    );
+    if (maxFileSizeMB === null) {
+      return res.status(400).json({
+        message: `Maximum file size must be between 1 and ${MAX_SUBMISSION_FILE_SIZE_MB} MB.`,
+      });
+    }
+
     const course = await ensureTeacherCourse(courseId, req.user.userId);
     if (!course) {
       return res.status(404).json({ message: 'Course not found.' });
@@ -602,7 +640,7 @@ const createTeacherSubmissionAssessment = async (req, res) => {
         instructions: String(submissionConfig.instructions || '').trim(),
         dueDate: submissionConfig.dueDate || null,
         allowedExtensions: normalizeAllowedExtensions(submissionConfig.allowedExtensions),
-        maxFileSizeMB: Number(submissionConfig.maxFileSizeMB || 10),
+        maxFileSizeMB,
         allowResubmission: submissionConfig.allowResubmission !== false,
         resourceTitle: normalizeResourceUrl(submissionConfig.resourceUrl)
           ? normalizeResourceTitle(submissionConfig.resourceTitle)
@@ -1336,9 +1374,18 @@ const updateTeacherSubmissionAssessment = async (req, res) => {
           : assessment.submissionConfig.dueDate || null;
 
       if (payload.maxFileSizeMB != null) {
-        assessment.submissionConfig.maxFileSizeMB = Number(
-          payload.maxFileSizeMB || 10
+        const maxFileSizeMB = parseSubmissionFileSizeLimit(
+          payload.maxFileSizeMB,
+          assessment.submissionConfig.maxFileSizeMB || 10
         );
+
+        if (maxFileSizeMB === null) {
+          return res.status(400).json({
+            message: `Maximum file size must be between 1 and ${MAX_SUBMISSION_FILE_SIZE_MB} MB.`,
+          });
+        }
+
+        assessment.submissionConfig.maxFileSizeMB = maxFileSizeMB;
       }
 
       if (payload.allowResubmission != null) {

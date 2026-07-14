@@ -12,6 +12,10 @@ const BLOCKED_EXTENSIONS = new Set([
 ]);
 
 const storage = multer.memoryStorage();
+const MAX_SUBMISSION_UPLOAD_MB = Math.max(
+  1,
+  Number(process.env.LAB_SUBMISSION_UPLOAD_LIMIT_MB || 50)
+);
 
 function fileFilter(_req, file, cb) {
   const ext = path.extname(file.originalname || '').toLowerCase();
@@ -31,8 +35,8 @@ const uploadLabSubmission = multer({
   storage,
   fileFilter,
   limits: {
-    fileSize: 10 * 1024 * 1024,
+    fileSize: MAX_SUBMISSION_UPLOAD_MB * 1024 * 1024,
   },
 });
 
-module.exports = { uploadLabSubmission };
+module.exports = { uploadLabSubmission, MAX_SUBMISSION_UPLOAD_MB };

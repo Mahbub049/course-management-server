@@ -17,6 +17,9 @@ const publicLabSubmissionRoutes = require('./routes/publicLabSubmissionRoutes');
 const routineRoutes = require('./routes/routineRoutes');
 const academicCalendarRoutes = require("./routes/academicCalendarRoutes");
 const notebookRoutes = require("./routes/notebookRoutes");
+const {
+  MAX_SUBMISSION_UPLOAD_MB,
+} = require('./middleware/submissionUploadMiddleware');
 
 const app = express();
 
@@ -71,6 +74,20 @@ app.use('/api/public-lab-submissions', publicLabSubmissionRoutes);
 app.use('/api/routine', routineRoutes);
 app.use("/api/academic-calendar", academicCalendarRoutes);
 app.use("/api/notebook", notebookRoutes);
+
+app.use((err, _req, res, next) => {
+  if (err?.code === 'LIMIT_FILE_SIZE') {
+    return res.status(400).json({
+      message: `File is too large. The portal upload limit is ${MAX_SUBMISSION_UPLOAD_MB} MB.`,
+    });
+  }
+
+  if (err?.message?.startsWith('Invalid file type.')) {
+    return res.status(400).json({ message: err.message });
+  }
+
+  return next(err);
+});
 
 const PORT = process.env.PORT || 5000;
 
