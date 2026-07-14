@@ -35,9 +35,20 @@ const getGradeFromTotal = (total) => {
   return 'F';
 };
 
+const getStructuredLabPeriod = (assessment) => {
+  if (assessment?.structureType !== 'lab_final') return '';
+  return String(assessment?.labFinalConfig?.period || 'final').toLowerCase() ===
+    'mid'
+    ? 'mid'
+    : 'final';
+};
+
 const isFinalAssessment = (assessment) => {
   const name = lower(assessment?.name);
-  return assessment?.structureType === "lab_final" || name.includes("final");
+  if (assessment?.structureType === 'lab_final') {
+    return getStructuredLabPeriod(assessment) === 'final';
+  }
+  return name.includes('final');
 };
 
 const isIncompleteMark = (markDoc) => {
@@ -285,10 +296,21 @@ const computeSummaryForStudent = (
       );
     });
 
-    const midAssessment = findByName(assessmentList, (name) => name.includes('mid'));
+    const structuredLabMid = assessmentList.find(
+      (a) =>
+        a?.structureType === 'lab_final' &&
+        getStructuredLabPeriod(a) === 'mid'
+    );
+    const regularMid = assessmentList.find(
+      (a) =>
+        a?.structureType !== 'lab_final' && lower(a.name).includes('mid')
+    );
+    const midAssessment = structuredLabMid || regularMid;
 
-    const advancedLabFinal = assessmentList.find(
-      (a) => a?.structureType === 'lab_final'
+    const structuredLabFinal = assessmentList.find(
+      (a) =>
+        a?.structureType === 'lab_final' &&
+        getStructuredLabPeriod(a) === 'final'
     );
 
     const regularFinal = assessmentList.find(
@@ -297,7 +319,7 @@ const computeSummaryForStudent = (
         lower(a.name).includes('final')
     );
 
-    const finalAssessment = advancedLabFinal || regularFinal;
+    const finalAssessment = structuredLabFinal || regularFinal;
     const attendanceAssessment = findAttendanceAssessment(assessmentList);
 
     const getCappedMark = (assessment) => {

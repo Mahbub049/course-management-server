@@ -59,6 +59,12 @@ function toObjectIdString(value) {
   return String(value);
 }
 
+function getStructuredLabPeriod(assessment) {
+  return String(assessment?.labFinalConfig?.period || "final").toLowerCase() === "mid"
+    ? "mid"
+    : "final";
+}
+
 function getOrderedProjectPhases(phases = []) {
   return [...phases].sort((a, b) => {
     const orderDiff = Number(a.order || 0) - Number(b.order || 0);
@@ -71,6 +77,22 @@ function getProjectAssessmentTargets(assessment) {
   const config = assessment?.labFinalConfig || {};
   const mode = config.mode;
   const targets = [];
+
+  if (mode === "components") {
+    (config.genericComponents || [])
+      .filter((component) => component.sourceType === "project")
+      .forEach((component, componentIndex) => {
+        targets.push({
+          key: component.key,
+          label: component.name || `Project Component ${componentIndex + 1}`,
+          fullMarks: Number(component.marks || 0),
+          componentKey: component.key,
+          componentName: component.name || `Project Component ${componentIndex + 1}`,
+          order: `${componentIndex}`,
+        });
+      });
+    return targets;
+  }
 
   if (mode !== "project_only" && mode !== "mixed") {
     return targets;
@@ -107,6 +129,17 @@ function getAllAssessmentItems(assessment) {
   const config = assessment?.labFinalConfig || {};
   const mode = config.mode;
   const items = [];
+
+  if (mode === "components") {
+    (config.genericComponents || []).forEach((component) => {
+      items.push({
+        key: component.key,
+        fullMarks: Number(component.marks || 0),
+        section: component.sourceType || "manual",
+      });
+    });
+    return items;
+  }
 
   if (mode === "project_only" || mode === "mixed") {
     (config.projectComponents || []).forEach((component) => {
@@ -292,6 +325,10 @@ const getTeacherProjectSyncState = async (req, res) => {
         marks: Number(item.totalMarks || item.fullMarks || item.marks || 0),
         structureType: item.structureType || "regular",
         labFinalMode: item.labFinalConfig?.mode || "",
+        labFinalPeriod:
+          item.structureType === "lab_final"
+            ? getStructuredLabPeriod(item)
+            : "",
       })),
     });
   } catch (err) {
@@ -320,6 +357,15 @@ const saveTeacherProjectSyncConfig = async (req, res) => {
 
       if (!assessment) {
         return res.status(404).json({ message: "Target assessment not found" });
+      }
+
+      if (
+        assessment.structureType === "lab_final" &&
+        getStructuredLabPeriod(assessment) !== "final"
+      ) {
+        return res.status(400).json({
+          message: "Project final sync can only target a Structured Lab Final, not a Structured Lab Mid.",
+        });
       }
 
       config.targetAssessmentId = targetAssessmentId;
@@ -394,7 +440,7 @@ async function syncIntoAdvancedLabFinal({
 
   if (!projectTargets.length) {
     const err = new Error(
-      "Selected Advanced Lab Final has no project breakdown items to sync into"
+      "Selected Structured Lab Final has no project components to sync into"
     );
     err.status = 400;
     throw err;
@@ -499,6 +545,15 @@ const runProjectFinalSync = async (req, res) => {
       });
     }
 
+    if (
+      targetAssessment.structureType === "lab_final" &&
+      getStructuredLabPeriod(targetAssessment) !== "final"
+    ) {
+      return res.status(400).json({
+        message: "Project final sync can only target a Structured Lab Final.",
+      });
+    }
+
     const [phases, groups, enrollments, evaluations] = await Promise.all([
       ProjectPhase.find({ course: courseId }),
       ProjectGroup.find({ course: courseId }).populate("members", "_id"),
@@ -519,10 +574,12 @@ const runProjectFinalSync = async (req, res) => {
     let syncMeta = { syncedCount: 0, mapping: [] };
 
     if (targetAssessment.structureType === "lab_final") {
-      if (targetAssessment.labFinalConfig?.mode === "lab_exam_only") {
+      const mode = targetAssessment.labFinalConfig?.mode;
+      const hasProjectTargets = getProjectAssessmentTargets(targetAssessment).length > 0;
+      if (mode === "lab_exam_only" || !hasProjectTargets) {
         return res.status(400).json({
           message:
-            "Selected Advanced Lab Final is set to Lab Final Only. It has no project section to sync into.",
+            "Selected Structured Lab Final has no project component. Add Project source components before syncing.",
         });
       }
 
@@ -546,7 +603,7 @@ const runProjectFinalSync = async (req, res) => {
     return res.json({
       message:
         targetAssessment.structureType === "lab_final"
-          ? "Project phase marks synced into advanced lab final breakdown successfully"
+          ? "Project phase marks synced into structured lab final breakdown successfully"
           : "Project totals synced successfully",
       syncedCount: syncMeta.syncedCount,
       targetAssessment: {
@@ -560,6 +617,10 @@ const runProjectFinalSync = async (req, res) => {
         ),
         structureType: targetAssessment.structureType || "regular",
         labFinalMode: targetAssessment.labFinalConfig?.mode || "",
+        labFinalPeriod:
+          targetAssessment.structureType === "lab_final"
+            ? getStructuredLabPeriod(targetAssessment)
+            : "",
       },
       lastSyncedAt: config.lastSyncedAt,
       totals: matrix.rows,

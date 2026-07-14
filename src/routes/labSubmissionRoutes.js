@@ -14,10 +14,13 @@ const {
 const {
   createTeacherSubmissionAssessment,
   getTeacherSubmissionAssessments,
+  getTeacherMarksSyncConfiguration,
+  updateTeacherMarksSyncConfiguration,
   updateTeacherSubmissionAssessment,
   deleteTeacherSubmissionAssessment,
   getTeacherAssessmentSubmissions,
   markSubmissionChecked,
+  deleteTeacherSubmission,
   saveAllSubmissionMarks,
   syncAllSubmissionMarksToAssessment,
   downloadAllTeacherAssessmentSubmissions,
@@ -40,6 +43,20 @@ router.get(
   authMiddleware,
   requireTeacher,
   getTeacherSubmissionAssessments
+);
+
+router.get(
+  "/teacher/courses/:courseId/marks-sync",
+  authMiddleware,
+  requireTeacher,
+  getTeacherMarksSyncConfiguration
+);
+
+router.patch(
+  "/teacher/courses/:courseId/assessments/:assessmentId/marks-sync",
+  authMiddleware,
+  requireTeacher,
+  updateTeacherMarksSyncConfiguration
 );
 
 router.patch(
@@ -75,6 +92,13 @@ router.patch(
   authMiddleware,
   requireTeacher,
   markSubmissionChecked
+);
+
+router.delete(
+  "/teacher/submissions/:submissionId",
+  authMiddleware,
+  requireTeacher,
+  deleteTeacherSubmission
 );
 
 router.post(

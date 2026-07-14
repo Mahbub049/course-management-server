@@ -84,17 +84,62 @@ const examQuestionSchema = new mongoose.Schema(
   { _id: false }
 );
 
+
+const genericLabComponentSchema = new mongoose.Schema(
+  {
+    key: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    marks: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+    sourceType: {
+      type: String,
+      enum: ['manual', 'submission', 'project', 'exam', 'viva'],
+      default: 'manual',
+    },
+    linkedAssessmentId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Assessment',
+      default: null,
+    },
+    order: {
+      type: Number,
+      default: 0,
+    },
+  },
+  { _id: false }
+);
+
 const labFinalConfigSchema = new mongoose.Schema(
   {
     mode: {
       type: String,
-      enum: ['project_only', 'lab_exam_only', 'mixed'],
+      enum: ['components', 'project_only', 'lab_exam_only', 'mixed'],
       default: 'lab_exam_only',
+    },
+    period: {
+      type: String,
+      enum: ['mid', 'final'],
+      default: 'final',
     },
     totalMarks: {
       type: Number,
       default: 40,
       min: 0,
+    },
+    genericComponents: {
+      type: [genericLabComponentSchema],
+      default: [],
     },
     projectMarks: {
       type: Number,
@@ -175,6 +220,11 @@ const submissionConfigSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'Assessment',
       default: null,
+    },
+    linkedMarkComponentKey: {
+      type: String,
+      default: '',
+      trim: true,
     },
   },
   { _id: false }

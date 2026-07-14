@@ -30,6 +30,60 @@ function sumSubMarks(subMarks = []) {
   );
 }
 
+function getStructuredAssessmentItems(assessment, mappedComponentKeys = new Set()) {
+  const config = assessment?.labFinalConfig || {};
+  const mode = config.mode;
+  const items = [];
+
+  if (mode === "components") {
+    (config.genericComponents || []).forEach((component) => {
+      if (!component?.key) return;
+      items.push({
+        key: String(component.key),
+        fullMarks: Number(component.marks || 0),
+        readOnly:
+          mappedComponentKeys.has(String(component.key)) ||
+          component.sourceType === "submission",
+      });
+    });
+    return items;
+  }
+
+  if (mode === "project_only" || mode === "mixed") {
+    (config.projectComponents || []).forEach((component) => {
+      if (component.entryMode === "phased") {
+        (component.phases || []).forEach((phase) => {
+          if (!phase?.key) return;
+          items.push({
+            key: String(phase.key),
+            fullMarks: Number(phase.marks || 0),
+            readOnly: false,
+          });
+        });
+      } else if (component?.key) {
+        items.push({
+          key: String(component.key),
+          fullMarks: Number(component.marks || 0),
+          readOnly: false,
+        });
+      }
+    });
+  }
+
+  if (mode === "lab_exam_only" || mode === "mixed") {
+    (config.examQuestions || []).forEach((question) => {
+      if (!question?.key) return;
+      items.push({
+        key: String(question.key),
+        fullMarks: Number(question.marks || 0),
+        readOnly: false,
+      });
+    });
+  }
+
+  return items;
+}
+
 function normalizeMarkStatus(value) {
   const status = String(value || "").trim().toLowerCase();
 
@@ -277,6 +331,46 @@ const saveMarksForCourse = async (req, res) => {
     });
 
     const assessmentMap = new Map(assessments.map((a) => [String(a._id), a]));
+    const mappedSubmissionAssessments = await Assessment.find({
+      course: courseId,
+      structureType: "lab_submission",
+      "submissionConfig.linkedMarkAssessment": { $in: assessmentIds },
+      "submissionConfig.linkedMarkComponentKey": {
+        $exists: true,
+        $nin: [null, ""],
+      },
+    }).select(
+      "submissionConfig.linkedMarkAssessment submissionConfig.linkedMarkComponentKey"
+    );
+
+    const mappedKeysByAssessment = new Map();
+    mappedSubmissionAssessments.forEach((sourceAssessment) => {
+      const targetId = String(
+        sourceAssessment?.submissionConfig?.linkedMarkAssessment || ""
+      );
+      const componentKey = String(
+        sourceAssessment?.submissionConfig?.linkedMarkComponentKey || ""
+      );
+      if (!targetId || !componentKey) return;
+      if (!mappedKeysByAssessment.has(targetId)) {
+        mappedKeysByAssessment.set(targetId, new Set());
+      }
+      mappedKeysByAssessment.get(targetId).add(componentKey);
+    });
+    const studentIds = marks
+      .map((m) => m.studentId || m.student)
+      .filter(Boolean);
+    const existingMarks = await Mark.find({
+      course: courseId,
+      assessment: { $in: assessmentIds },
+      student: { $in: studentIds },
+    }).select("student assessment subMarks");
+    const existingMarkMap = new Map(
+      existingMarks.map((mark) => [
+        `${String(mark.student)}:${String(mark.assessment)}`,
+        mark,
+      ])
+    );
 
     const cleaned = marks
       .map((m) => {
@@ -294,12 +388,44 @@ const saveMarksForCourse = async (req, res) => {
         const status = normalizeMarkStatus(rawStatus);
 
         const rawSubMarks = Array.isArray(m.subMarks) ? m.subMarks : [];
-        const subMarks = rawSubMarks
+        let subMarks = rawSubMarks
           .map((s) => ({
             key: String(s?.key || "").trim(),
             obtainedMarks: Number(s?.obtainedMarks || 0),
           }))
           .filter((s) => s.key);
+
+        if (assessment.structureType === "lab_final") {
+          const requestedMap = new Map(
+            subMarks.map((item) => [String(item.key), Number(item.obtainedMarks || 0)])
+          );
+          const existingMark = existingMarkMap.get(
+            `${String(studentId)}:${String(assessmentId)}`
+          );
+          const existingSubMarkMap = new Map(
+            (existingMark?.subMarks || []).map((item) => [
+              String(item.key),
+              Number(item.obtainedMarks || 0),
+            ])
+          );
+
+          subMarks = getStructuredAssessmentItems(
+            assessment,
+            mappedKeysByAssessment.get(String(assessmentId)) || new Set()
+          ).map((item) => {
+            const requestedValue = requestedMap.has(item.key)
+              ? requestedMap.get(item.key)
+              : existingSubMarkMap.get(item.key) || 0;
+            const obtainedMarks = item.readOnly
+              ? existingSubMarkMap.get(item.key) || 0
+              : requestedValue;
+
+            return {
+              key: item.key,
+              obtainedMarks: Number(obtainedMarks || 0),
+            };
+          });
+        }
 
         let obtainedMarks =
           m.obtainedMarks != null && !Number.isNaN(Number(m.obtainedMarks))
@@ -336,7 +462,34 @@ const saveMarksForCourse = async (req, res) => {
       });
     }
 
-        const overFullMark = cleaned.find((m) => {
+    const invalidStructuredSubMark = cleaned.find((mark) => {
+      const assessment = assessmentMap.get(String(mark.assessmentId));
+      if (assessment?.structureType !== "lab_final") return false;
+
+      const limits = new Map(
+        getStructuredAssessmentItems(
+          assessment,
+          mappedKeysByAssessment.get(String(mark.assessmentId)) || new Set()
+        ).map((item) => [
+          item.key,
+          Number(item.fullMarks || 0),
+        ])
+      );
+
+      return (mark.subMarks || []).some((item) => {
+        const limit = limits.get(String(item.key));
+        const value = Number(item.obtainedMarks || 0);
+        return limit == null || value < 0 || value > limit;
+      });
+    });
+
+    if (invalidStructuredSubMark) {
+      return res.status(400).json({
+        message: "A structured breakdown mark is outside its allowed full marks.",
+      });
+    }
+
+    const overFullMark = cleaned.find((m) => {
       const assessment = assessmentMap.get(String(m.assessmentId));
       const fullMarks = Number(assessment?.fullMarks || 0);
 
