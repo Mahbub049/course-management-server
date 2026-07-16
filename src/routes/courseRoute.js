@@ -61,6 +61,10 @@ const {
 } = require('../controllers/obeOutputController');
 
 const {
+  reuseObeData,
+} = require('../controllers/obeReuseController');
+
+const {
   getObeExportPayload,
   downloadCourseReviewReport,
 } = require("../controllers/obeReportController");
@@ -163,6 +167,8 @@ router.post("/:courseId/marks/sync-from-obe", ...teacherOnly, syncMarksFromObe);
 // ===================================================
 // ✅ OBE / CO-PO MODULE
 // ===================================================
+router.post('/:courseId/obe/reuse', ...teacherOnly, reuseObeData);
+
 router.get('/:courseId/obe/setup', ...teacherOnly, getObeSetup);
 router.put('/:courseId/obe/setup', ...teacherOnly, saveObeSetup);
 
