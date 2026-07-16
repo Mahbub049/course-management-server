@@ -171,6 +171,10 @@ const getAttendanceSheet = async (req, res) => {
     const course = await Course.findOne({ _id: courseId, createdBy: teacherId });
     if (!course) return res.status(404).json({ message: "Course not found for this teacher" });
 
+    const teacher = await User.findById(teacherId).select(
+      "name designation department shortCode"
+    );
+
     const attendanceDocs = await Attendance.find({
       teacher: teacherId,
       course: course._id,
@@ -249,8 +253,18 @@ const getAttendanceSheet = async (req, res) => {
         code: course.code,
         title: course.title,
         section: course.section,
+        intake: course.intake || "",
+        program: course.program || "",
         year: course.year,
         semester: course.semester,
+      },
+      teacher: {
+        name: teacher?.name || "Course Teacher",
+        shortCode: teacher?.shortCode || "",
+        designation: teacher?.designation || "Assistant Professor",
+        department:
+          teacher?.department ||
+          "Department of Computer Science & Engineering",
       },
       students,
       sessions,

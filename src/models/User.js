@@ -73,6 +73,14 @@ const userSchema = new mongoose.Schema(
 
     designation: {
       type: String,
+      trim: true,
+    },
+
+    shortCode: {
+      type: String,
+      trim: true,
+      maxlength: 20,
+      default: "",
     },
 
     joiningDate: {

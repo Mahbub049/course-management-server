@@ -6,6 +6,12 @@ const { sendMail } = require("../utils/mailer");
 const OTP_EXPIRY_MINUTES = 10;
 const RESET_VERIFIED_EXPIRY_MINUTES = 10;
 const MAX_OTP_ATTEMPTS = 5;
+const ALLOWED_DESIGNATIONS = [
+  "Lecturer",
+  "Assistant Professor",
+  "Associate Professor",
+  "Professor",
+];
 
 const generateToken = (user, rememberMe = false) => {
   return jwt.sign(
@@ -132,6 +138,9 @@ const login = async (req, res) => {
       firstLogin: user.firstLogin,
       name: user.name,
       username: user.username,
+      shortCode: user.shortCode || "",
+      designation: user.designation || "",
+      department: user.department || "",
       profileImage: user.profileImage || "",
     });
   } catch (err) {
@@ -169,6 +178,14 @@ const registerTeacher = async (req, res) => {
 
     const cleanUsername = String(username).trim();
     const cleanEmail = normalizeEmail(email);
+    const cleanDesignation = String(designation).trim();
+
+    if (!ALLOWED_DESIGNATIONS.includes(cleanDesignation)) {
+      return res.status(400).json({
+        message:
+          "Designation must be Lecturer, Assistant Professor, Associate Professor, or Professor.",
+      });
+    }
 
     if (cleanUsername.length < 3) {
       return res.status(400).json({
@@ -212,7 +229,7 @@ const registerTeacher = async (req, res) => {
       email: cleanEmail,
       emailVerified: true,
       department: department.trim(),
-      designation: designation.trim(),
+      designation: cleanDesignation,
       joiningDate,
       firstLogin: true,
     });
@@ -265,13 +282,57 @@ const changePassword = async (req, res) => {
   }
 };
 
+// GET /api/auth/profile
+const getProfile = async (req, res) => {
+  try {
+    const userId = req.user?.userId || req.user?.id;
+
+    const user = await User.findById(userId).select(
+      "username name role shortCode designation department profileImage"
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: "User not found." });
+    }
+
+    return res.json({
+      id: user._id,
+      username: user.username,
+      name: user.name,
+      shortCode: user.shortCode || "",
+      designation: user.designation || "",
+      department: user.department || "",
+      role: user.role,
+      profileImage: user.profileImage || "",
+    });
+  } catch (err) {
+    console.error("getProfile error", err);
+    return res.status(500).json({ message: "Server error loading profile." });
+  }
+};
+
 // PUT /api/auth/profile
 const updateProfile = async (req, res) => {
   try {
-    const userId = req.user.userId;
-    const { username, name, profileImageBase64 } = req.body;
+    const userId = req.user?.userId || req.user?.id;
+    const { username, name, shortCode, designation, profileImageBase64 } =
+      req.body;
+    const hasShortCode = Object.prototype.hasOwnProperty.call(
+      req.body,
+      "shortCode"
+    );
+    const hasDesignation = Object.prototype.hasOwnProperty.call(
+      req.body,
+      "designation"
+    );
 
-    if (!username && !name && !profileImageBase64) {
+    if (
+      !username &&
+      !name &&
+      !hasShortCode &&
+      !hasDesignation &&
+      !profileImageBase64
+    ) {
       return res.status(400).json({ message: "Nothing to update." });
     }
 
@@ -311,6 +372,43 @@ const updateProfile = async (req, res) => {
       update.name = String(name).trim();
     }
 
+    if (hasShortCode) {
+      const cleanShortCode = String(shortCode || "").trim();
+
+      if (cleanShortCode.length > 20) {
+        return res.status(400).json({
+          message: "Short code cannot be more than 20 characters.",
+        });
+      }
+
+      update.shortCode = cleanShortCode;
+    }
+
+    if (hasDesignation) {
+      const cleanDesignation = String(designation || "").trim();
+
+      if (!ALLOWED_DESIGNATIONS.includes(cleanDesignation)) {
+        return res.status(400).json({
+          message:
+            "Please select Lecturer, Assistant Professor, Associate Professor, or Professor.",
+        });
+      }
+
+      const account = await User.findById(userId).select("role");
+
+      if (!account) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      if (account.role !== "teacher") {
+        return res.status(403).json({
+          message: "Only teacher accounts can update designation.",
+        });
+      }
+
+      update.designation = cleanDesignation;
+    }
+
     if (profileImageBase64) {
       const imageUrl = await uploadBase64ToImgbb(
         profileImageBase64,
@@ -321,6 +419,7 @@ const updateProfile = async (req, res) => {
 
     const user = await User.findByIdAndUpdate(userId, update, {
       new: true,
+      runValidators: true,
     });
 
     if (!user) {
@@ -331,6 +430,9 @@ const updateProfile = async (req, res) => {
       id: user._id,
       username: user.username,
       name: user.name,
+      shortCode: user.shortCode || "",
+      designation: user.designation || "",
+      department: user.department || "",
       role: user.role,
       profileImage: user.profileImage || "",
     });
@@ -623,6 +725,7 @@ const resetPasswordWithOtp = async (req, res) => {
 module.exports = {
   login,
   changePassword,
+  getProfile,
   updateProfile,
   registerTeacher,
   requestPasswordResetOtp,

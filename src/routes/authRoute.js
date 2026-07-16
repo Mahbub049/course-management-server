@@ -4,6 +4,7 @@ const router = express.Router();
 const {
   login,
   changePassword,
+  getProfile,
   updateProfile,
   registerTeacher,
   requestPasswordResetOtp,
@@ -24,6 +25,7 @@ router.post("/forgot-password/reset", resetPasswordWithOtp);
 
 // Protected routes
 router.post("/change-password", authMiddleware, changePassword);
+router.get("/profile", authMiddleware, getProfile);
 router.put("/profile", authMiddleware, updateProfile);
 
 module.exports = router;
