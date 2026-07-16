@@ -4,6 +4,10 @@ const Course = require('../models/Course');
 const Assessment = require('../models/Assessment');
 const Enrollment = require('../models/Enrollment');
 const Mark = require('../models/Mark');
+const {
+  normalizeShift,
+  isProgramAllowedForShift,
+} = require('../constants/bubtAcademicPrograms');
 // If you also track complaints per course, you can uncomment this
 // and the delete block below.
 // const Complaint = require('../models/Complaint');
@@ -118,6 +122,8 @@ const createCourse = async (req, res) => {
       title,
       section,
       intake,
+      shift,
+      department,
       semester,
       year,
       courseType,
@@ -125,10 +131,19 @@ const createCourse = async (req, res) => {
       complaintSettings,
     } = req.body;
 
-    if (!code || !title || !section || !semester || !year) {
-      return res
-        .status(400)
-        .json({ message: 'Missing required fields' });
+    if (!code || !title || !section || !shift || !department || !semester || !year) {
+      return res.status(400).json({
+        message: 'Course code, title, section, shift, department, semester, and year are required.',
+      });
+    }
+
+    const normalizedShift = normalizeShift(shift);
+    const normalizedDepartment = String(department || '').trim();
+
+    if (!isProgramAllowedForShift(normalizedDepartment, normalizedShift)) {
+      return res.status(400).json({
+        message: `The selected department/program is not available for the ${normalizedShift} shift.`,
+      });
     }
 
     const normalizedType = ALLOWED_COURSE_TYPES.includes(courseType)
@@ -140,6 +155,8 @@ const createCourse = async (req, res) => {
       title,
       section,
       intake: typeof intake === "string" ? intake.trim() : intake || "",
+      shift: normalizedShift,
+      department: normalizedDepartment,
       semester,
       year,
       courseType: normalizedType,
@@ -160,6 +177,9 @@ const createCourse = async (req, res) => {
       title: course.title,
       section: course.section,
       intake: course.intake || "",
+      shift: course.shift || "Day",
+      department: course.department || "",
+      program: course.department || "",
       semester: course.semester,
       year: course.year,
       courseType: course.courseType,
@@ -201,6 +221,9 @@ const getCourses = async (req, res) => {
       title: c.title,
       section: c.section,
       intake: c.intake || "",
+      shift: c.shift || "Day",
+      department: c.department || "",
+      program: c.department || "",
       semester: c.semester,
       year: c.year,
       courseType: c.courseType,
@@ -244,6 +267,8 @@ const updateCourse = async (req, res) => {
       title,
       section,
       intake,
+      shift,
+      department,
       semester,
       year,
       courseType,
@@ -261,6 +286,39 @@ const updateCourse = async (req, res) => {
     if (intake !== undefined) update.intake = String(intake).trim();
     if (semester !== undefined) update.semester = String(semester).trim();
     if (year !== undefined) update.year = Number(year);
+
+    if (shift !== undefined || department !== undefined) {
+      const existingCourseForAcademicFields = await Course.findOne({
+        _id: id,
+        createdBy: teacherId,
+      }).select('shift department');
+
+      if (!existingCourseForAcademicFields) {
+        return res.status(404).json({ message: 'Course not found' });
+      }
+
+      const nextShift = normalizeShift(
+        shift !== undefined ? shift : existingCourseForAcademicFields.shift || 'Day'
+      );
+      const nextDepartment = String(
+        department !== undefined
+          ? department
+          : existingCourseForAcademicFields.department || ''
+      ).trim();
+
+      if (!nextDepartment) {
+        return res.status(400).json({ message: 'Department/program is required.' });
+      }
+
+      if (!isProgramAllowedForShift(nextDepartment, nextShift)) {
+        return res.status(400).json({
+          message: `The selected department/program is not available for the ${nextShift} shift.`,
+        });
+      }
+
+      update.shift = nextShift;
+      update.department = nextDepartment;
+    }
 
     if (courseType && ALLOWED_COURSE_TYPES.includes(courseType)) {
       update.courseType = String(courseType).toLowerCase();

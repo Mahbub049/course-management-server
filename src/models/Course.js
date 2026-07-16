@@ -65,6 +65,16 @@ const courseSchema = new mongoose.Schema(
       trim: true,
       default: "",
     },
+    shift: {
+      type: String,
+      enum: ["Day", "Evening"],
+      default: "Day",
+    },
+    department: {
+      type: String,
+      trim: true,
+      default: "",
+    },
     semester: {
       type: String,
     },

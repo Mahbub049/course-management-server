@@ -2,6 +2,9 @@ const Attendance = require("../models/Attendance");
 const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const User = require("../models/User");
+const {
+  getDepartmentLineForProgram,
+} = require("../constants/bubtAcademicPrograms");
 
 function parseYMD(dateStr) {
   const [y, m, d] = String(dateStr).split("-").map(Number);
@@ -254,7 +257,9 @@ const getAttendanceSheet = async (req, res) => {
         title: course.title,
         section: course.section,
         intake: course.intake || "",
-        program: course.program || "",
+        shift: course.shift || "Day",
+        department: course.department || "",
+        program: course.department || course.program || "",
         year: course.year,
         semester: course.semester,
       },
@@ -263,8 +268,9 @@ const getAttendanceSheet = async (req, res) => {
         shortCode: teacher?.shortCode || "",
         designation: teacher?.designation || "Assistant Professor",
         department:
+          getDepartmentLineForProgram(course.department) ||
           teacher?.department ||
-          "Department of Computer Science & Engineering",
+          "Department of Computer Science & Engineering, BUBT",
       },
       students,
       sessions,
