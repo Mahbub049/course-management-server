@@ -281,6 +281,14 @@ const assessmentSchema = new mongoose.Schema(
       default: false,
     },
 
+    // When false, the assessment still contributes to the student's
+    // published total and grade, but its individual mark is not returned
+    // to the student-facing application.
+    showMarksToStudents: {
+      type: Boolean,
+      default: true,
+    },
+
     publishedAt: {
       type: Date,
       default: null,

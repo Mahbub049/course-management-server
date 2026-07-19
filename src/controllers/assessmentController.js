@@ -1517,6 +1517,13 @@ const publishAssessment = async (req, res) => {
 
     assessment.isPublished = true;
     assessment.publishedAt = new Date();
+
+    // Preserve an explicitly hidden assessment. Older assessments that do not
+    // yet have this field should remain visible after publishing.
+    if (typeof assessment.showMarksToStudents !== 'boolean') {
+      assessment.showMarksToStudents = true;
+    }
+
     await assessment.save();
 
     return res.json({
@@ -1529,10 +1536,98 @@ const publishAssessment = async (req, res) => {
   }
 };
 
+const unpublishAssessment = async (req, res) => {
+  try {
+    const { courseId, assessmentId } = req.params;
+
+    const course = await Course.findOne({
+      _id: courseId,
+      createdBy: req.user.userId,
+    });
+
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    const assessment = await Assessment.findOne({
+      _id: assessmentId,
+      course: courseId,
+    });
+
+    if (!assessment) {
+      return res.status(404).json({ message: 'Assessment not found' });
+    }
+
+    assessment.isPublished = false;
+    assessment.publishedAt = null;
+    await assessment.save();
+
+    return res.json({
+      message: 'Assessment unpublished successfully',
+      assessment,
+    });
+  } catch (err) {
+    console.error('Unpublish assessment error', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
+const updateAssessmentStudentVisibility = async (req, res) => {
+  try {
+    const { courseId, assessmentId } = req.params;
+    const { showMarksToStudents } = req.body;
+
+    if (typeof showMarksToStudents !== 'boolean') {
+      return res.status(400).json({
+        message: 'showMarksToStudents must be true or false',
+      });
+    }
+
+    const course = await Course.findOne({
+      _id: courseId,
+      createdBy: req.user.userId,
+    });
+
+    if (!course) {
+      return res.status(404).json({ message: 'Course not found' });
+    }
+
+    const assessment = await Assessment.findOneAndUpdate(
+      {
+        _id: assessmentId,
+        course: courseId,
+      },
+      {
+        $set: { showMarksToStudents },
+      },
+      {
+        new: true,
+        runValidators: true,
+      }
+    );
+
+    if (!assessment) {
+      return res.status(404).json({ message: 'Assessment not found' });
+    }
+
+    return res.json({
+      message: showMarksToStudents
+        ? 'Assessment mark is now visible to students'
+        : 'Assessment mark is hidden; it still contributes to total and grade',
+      assessment,
+    });
+  } catch (err) {
+    console.error('Update assessment student visibility error', err);
+    return res.status(500).json({ message: 'Server error' });
+  }
+};
+
 module.exports = {
   getAssessmentsForCourse,
   createAssessment,
   updateAssessment,
   deleteAssessment,
   publishAssessment,
+  unpublishAssessment,
+  updateAssessmentStudentVisibility,
 };

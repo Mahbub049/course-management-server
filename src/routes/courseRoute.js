@@ -30,6 +30,8 @@ const {
   updateAssessment,
   deleteAssessment,
   publishAssessment,
+  unpublishAssessment,
+  updateAssessmentStudentVisibility,
 } = require("../controllers/assessmentController");
 
 const {
@@ -194,6 +196,12 @@ router.get("/:courseId/attendance-summary/from-sheet", ...teacherOnly, getAttend
 
 
 router.post("/:courseId/assessments/:assessmentId/publish", ...teacherOnly, publishAssessment);
+router.post("/:courseId/assessments/:assessmentId/unpublish", ...teacherOnly, unpublishAssessment);
+router.patch(
+  "/:courseId/assessments/:assessmentId/student-visibility",
+  ...teacherOnly,
+  updateAssessmentStudentVisibility
+);
 
 
 // ===================================================

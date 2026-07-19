@@ -433,6 +433,8 @@ const computeSummaryForStudent = (
         ctMain: round2(roundPolicyTotal(ctNow)),
         labMain: round2(roundPolicyTotal(labMidNow + labFinalNow)),
         assignmentMain: round2(roundPolicyTotal(assignmentNow)),
+        hybridMidTotal: round2(theoryMidNow + labMidNow),
+        hybridFinalTotal: round2(theoryFinalNow + labFinalNow),
       }
     );
   }
@@ -722,10 +724,19 @@ const getStudentCourseDetails = async (req, res) => {
       markDocsByAssessment[aid] = m;
     });
 
+    // Every published assessment remains listed so students understand which
+    // component contributes to the total. When the teacher hides an individual
+    // mark, the value and any component breakdown are redacted here at the API
+    // boundary. The private marks map is still used for total and grade.
     const assessmentsResponse = assessments.map((a) => {
       const aid = a._id.toString();
       const markDoc = markDocsByAssessment[aid];
-      const obtained = marksByAssessment[aid] ?? null;
+      const hasRecordedMark = Object.prototype.hasOwnProperty.call(
+        marksByAssessment,
+        aid
+      );
+      const markHidden = a.showMarksToStudents === false;
+      const obtained = hasRecordedMark ? marksByAssessment[aid] : null;
 
       return {
         id: aid,
@@ -736,9 +747,16 @@ const getStudentCourseDetails = async (req, res) => {
         labFinalConfig: a.labFinalConfig || null,
         isPublished: a.isPublished,
         publishedAt: a.publishedAt,
-        obtainedMarks: obtained,
-        status: markDoc?.status || "present",
-        subMarks: Array.isArray(markDoc?.subMarks) ? markDoc.subMarks : [],
+        showMarksToStudents: !markHidden,
+        markHidden,
+        hasRecordedMark,
+        includedInTotal: true,
+        obtainedMarks: markHidden ? null : obtained,
+        status: markHidden ? null : markDoc?.status || "present",
+        subMarks:
+          markHidden || !Array.isArray(markDoc?.subMarks)
+            ? []
+            : markDoc.subMarks,
       };
     });
 
@@ -748,6 +766,12 @@ const getStudentCourseDetails = async (req, res) => {
       marksByAssessment,
       markDocsByAssessment
     );
+
+    res.set({
+      'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
+    });
 
     res.json({
       course: {
