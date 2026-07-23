@@ -74,6 +74,7 @@ const createStudentComplaint = async (req, res) => {
 
     // ✅ Attendance validation (only for attendance category)
     let cleanedAttendanceRef = null;
+    let attendanceDedupKey;
     if (category === "attendance") {
       const d = attendanceRef?.date;
       const p = Number(attendanceRef?.period);
@@ -86,6 +87,28 @@ const createStudentComplaint = async (req, res) => {
       }
 
       cleanedAttendanceRef = { date: d, period: p };
+      attendanceDedupKey = `${studentId}:${courseId}:${d}:${p}`;
+
+      const existingAttendanceComplaint = await Complaint.findOne({
+        student: studentId,
+        course: courseId,
+        category: "attendance",
+        "attendanceRef.date": d,
+        "attendanceRef.period": p,
+      }).select("_id status createdAt");
+
+      if (existingAttendanceComplaint) {
+        return res.status(409).json({
+          code: "DUPLICATE_ATTENDANCE_COMPLAINT",
+          message:
+            "You have already submitted an attendance complaint for this date and period.",
+          existingComplaint: {
+            id: existingAttendanceComplaint._id,
+            status: existingAttendanceComplaint.status,
+            createdAt: existingAttendanceComplaint.createdAt,
+          },
+        });
+      }
     }
 
     // ✅ Find teacher for this course (Enrollment -> fallback Course.createdBy)
@@ -120,6 +143,7 @@ const createStudentComplaint = async (req, res) => {
 
       category,
       attendanceRef: cleanedAttendanceRef, // null unless attendance category
+      attendanceDedupKey, // unique only for newly-created attendance complaints
       message: message.trim(),
       status: "open",
     });
@@ -135,6 +159,15 @@ const createStudentComplaint = async (req, res) => {
     res.status(201).json(populated);
   } catch (err) {
     console.error("createStudentComplaint error:", err);
+
+    if (err?.code === 11000) {
+      return res.status(409).json({
+        code: "DUPLICATE_ATTENDANCE_COMPLAINT",
+        message:
+          "You have already submitted an attendance complaint for this date and period.",
+      });
+    }
+
     res.status(500).json({ message: "Server error" });
   }
 };

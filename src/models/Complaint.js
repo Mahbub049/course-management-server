@@ -53,6 +53,15 @@ const complaintSchema = new mongoose.Schema(
       default: null,
     },
 
+    // Populated only for newly-created attendance complaints. Keeping it sparse
+    // avoids deployment failures if historical attendance complaints contain duplicates.
+    attendanceDedupKey: {
+      type: String,
+      trim: true,
+      default: undefined,
+      select: false,
+    },
+
     message: {
       type: String,
       required: true,
@@ -71,6 +80,18 @@ const complaintSchema = new mongoose.Schema(
     },
   },
   { timestamps: true }
+);
+
+// A student may report a specific attendance session only once.
+// A sparse key protects new submissions atomically without forcing a migration
+// or failing startup when historical records already contain duplicates.
+complaintSchema.index(
+  { attendanceDedupKey: 1 },
+  {
+    unique: true,
+    sparse: true,
+    name: "unique_student_attendance_complaint",
+  }
 );
 
 module.exports = mongoose.model("Complaint", complaintSchema);
