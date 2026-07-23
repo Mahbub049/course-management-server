@@ -7,6 +7,25 @@ const ObeStudentMark = require('../models/ObeStudentMark');
 const cleanText = (value = '') => String(value || '').trim();
 const cleanCode = (value = '') => cleanText(value).toUpperCase();
 
+const getCourseType = (course = {}) => {
+  const type = cleanText(course.courseType || course.type).toLowerCase();
+  if (type === 'hybrid') return 'hybrid';
+  if (type.includes('lab')) return 'lab';
+  return 'theory';
+};
+
+const isLabExamBlueprint = (blueprint = {}) =>
+  ['mid', 'midterm', 'final'].includes(
+    cleanText(blueprint.assessmentType).toLowerCase()
+  );
+
+const getExpectedLabAssessmentMarks = (blueprint = {}) => {
+  const type = cleanText(blueprint.assessmentType).toLowerCase();
+  if (type === 'mid' || type === 'midterm') return 30;
+  if (type === 'final') return 40;
+  return 0;
+};
+
 const copyOutcomeRows = (rows = []) =>
   rows.map((row, index) => ({
     code: cleanCode(row.code),
@@ -58,7 +77,7 @@ const findOwnedCourses = async ({ sourceCourseId, targetCourseId, teacherId }) =
   const courses = await Course.find({
     _id: { $in: [sourceCourseId, targetCourseId] },
     createdBy: teacherId,
-  }).select('_id code title intake section semester year archived');
+  }).select('_id code title intake section semester year courseType archived');
 
   const byId = new Map(courses.map((course) => [String(course._id), course]));
 
@@ -126,16 +145,37 @@ const reuseObeData = async (req, res) => {
           .lean(),
       ]);
 
+    const targetIsLabCourse = getCourseType(targetCourse) === 'lab';
+    const sourceBlueprintsForCopy = targetIsLabCourse
+      ? sourceBlueprints.filter(isLabExamBlueprint)
+      : sourceBlueprints;
+
     if (shouldCopySetup && (!sourceOutcomes.length || !sourceConfig)) {
       return res.status(400).json({
         message: 'The selected source course does not have a saved OBE setup to copy.',
       });
     }
 
-    if (shouldCopyBlueprints && !sourceBlueprints.length) {
+    if (shouldCopyBlueprints && !sourceBlueprintsForCopy.length) {
       return res.status(400).json({
-        message: 'The selected source course does not have any assessment blueprints to copy.',
+        message: targetIsLabCourse
+          ? 'The selected source course does not have Lab Mid or Lab Final blueprints to copy.'
+          : 'The selected source course does not have any assessment blueprints to copy.',
       });
+    }
+
+    if (shouldCopyBlueprints && targetIsLabCourse) {
+      const invalidLabBlueprint = sourceBlueprintsForCopy.find((blueprint) => {
+        const expectedMarks = getExpectedLabAssessmentMarks(blueprint);
+        return expectedMarks && Number(blueprint.totalMarks || 0) !== expectedMarks;
+      });
+
+      if (invalidLabBlueprint) {
+        const expectedMarks = getExpectedLabAssessmentMarks(invalidLabBlueprint);
+        return res.status(400).json({
+          message: `The source blueprint "${invalidLabBlueprint.assessmentName}" must total ${expectedMarks} marks before it can be reused for a lab course.`,
+        });
+      }
     }
 
     const resultingCoCodes = new Set(
@@ -143,7 +183,7 @@ const reuseObeData = async (req, res) => {
     );
 
     if (shouldCopyBlueprints) {
-      const invalidSourceBlueprint = sourceBlueprints.find((blueprint) =>
+      const invalidSourceBlueprint = sourceBlueprintsForCopy.find((blueprint) =>
         (blueprint.items || []).some((item) => !resultingCoCodes.has(cleanCode(item.coCode)))
       );
 
@@ -203,7 +243,7 @@ const reuseObeData = async (req, res) => {
     }
 
     if (shouldCopyBlueprints) {
-      let blueprintsToInsert = sourceBlueprints;
+      let blueprintsToInsert = sourceBlueprintsForCopy;
 
       if (normalizedBlueprintMode === 'replace') {
         const markDeleteResult = await ObeStudentMark.deleteMany({ course: targetCourseId });
@@ -214,10 +254,11 @@ const reuseObeData = async (req, res) => {
           targetBlueprints.map((row) => cleanText(row.assessmentName).toLowerCase())
         );
 
-        blueprintsToInsert = sourceBlueprints.filter(
+        blueprintsToInsert = sourceBlueprintsForCopy.filter(
           (row) => !existingNames.has(cleanText(row.assessmentName).toLowerCase())
         );
-        skippedBlueprintCount = sourceBlueprints.length - blueprintsToInsert.length;
+        skippedBlueprintCount =
+          sourceBlueprintsForCopy.length - blueprintsToInsert.length;
       }
 
       if (blueprintsToInsert.length) {

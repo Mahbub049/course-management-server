@@ -22,6 +22,37 @@ const cleanText = (value = '') => String(value || '').trim();
 const cleanCode = (value = '') => cleanText(value).toUpperCase();
 const round2 = (num) => Math.round(Number(num || 0) * 100) / 100;
 
+const getCourseType = (course = {}) => {
+  const type = cleanText(course.courseType || course.type).toLowerCase();
+  if (type === 'hybrid') return 'hybrid';
+  if (type.includes('lab')) return 'lab';
+  return 'theory';
+};
+
+const normalizeAssessmentType = (value = '') => cleanText(value).toLowerCase();
+
+const getExpectedLabAssessmentMarks = (assessmentType) => {
+  const normalizedType = normalizeAssessmentType(assessmentType);
+  if (normalizedType === 'mid') return 30;
+  if (normalizedType === 'final') return 40;
+  return 0;
+};
+
+const validateAssessmentTypeForCourse = (course, assessmentType) => {
+  const normalizedType = normalizeAssessmentType(assessmentType);
+  const allowedTypes = ['ct', 'assignment', 'mid', 'final', 'attendance'];
+
+  if (!allowedTypes.includes(normalizedType)) {
+    return 'Please select a valid assessment type.';
+  }
+
+  if (getCourseType(course) === 'lab' && !['mid', 'final'].includes(normalizedType)) {
+    return 'Lab OBE blueprints can only be created for Lab Mid and Lab Final. Attendance and Lab Evaluation are fetched automatically from the lab course marksheet.';
+  }
+
+  return '';
+};
+
 const normalizeItems = (items = []) => {
   return (Array.isArray(items) ? items : [])
     .map((item, index) => ({
@@ -43,7 +74,15 @@ const getObeBlueprints = async (req, res) => {
       return res.status(404).json({ message: 'Course not found' });
     }
 
-    const blueprints = await ObeAssessmentBlueprint.find({ course: courseId }).sort({ order: 1, createdAt: 1 });
+    const blueprintQuery = { course: courseId };
+    if (getCourseType(course) === 'lab') {
+      blueprintQuery.assessmentType = { $in: ['mid', 'final'] };
+    }
+
+    const blueprints = await ObeAssessmentBlueprint.find(blueprintQuery).sort({
+      order: 1,
+      createdAt: 1,
+    });
     return res.json(blueprints);
   } catch (error) {
     console.error('getObeBlueprints error', error);
@@ -68,6 +107,15 @@ const createObeBlueprint = async (req, res) => {
       return res.status(404).json({ message: 'Course not found' });
     }
 
+    const normalizedAssessmentType = normalizeAssessmentType(assessmentType);
+    const assessmentTypeError = validateAssessmentTypeForCourse(
+      course,
+      normalizedAssessmentType
+    );
+    if (assessmentTypeError) {
+      return res.status(400).json({ message: assessmentTypeError });
+    }
+
     const normalizedItems = normalizeItems(items);
     if (!cleanText(assessmentName)) {
       return res.status(400).json({ message: 'assessmentName is required.' });
@@ -86,6 +134,16 @@ const createObeBlueprint = async (req, res) => {
 
     const itemTotal = round2(normalizedItems.reduce((sum, item) => sum + Number(item.marks || 0), 0));
     const requestedTotal = round2(totalMarks);
+    const expectedLabMarks =
+      getCourseType(course) === 'lab'
+        ? getExpectedLabAssessmentMarks(normalizedAssessmentType)
+        : 0;
+
+    if (expectedLabMarks && requestedTotal !== expectedLabMarks) {
+      return res.status(400).json({
+        message: `${normalizedAssessmentType === 'mid' ? 'Lab Mid' : 'Lab Final'} must have a total of ${expectedLabMarks} marks.`,
+      });
+    }
 
     if (requestedTotal !== itemTotal) {
       return res.status(400).json({
@@ -96,9 +154,9 @@ const createObeBlueprint = async (req, res) => {
     const blueprint = await ObeAssessmentBlueprint.create({
       course: courseId,
       assessmentName: cleanText(assessmentName),
-      assessmentType: cleanText(assessmentType).toLowerCase(),
+      assessmentType: normalizedAssessmentType,
       totalMarks: requestedTotal,
-      order: getAssessmentOrder(assessmentType),
+      order: getAssessmentOrder(normalizedAssessmentType),
       items: normalizedItems,
       notes: cleanText(notes),
     });
@@ -130,6 +188,15 @@ const updateObeBlueprint = async (req, res) => {
       return res.status(404).json({ message: 'Course not found' });
     }
 
+    const normalizedAssessmentType = normalizeAssessmentType(assessmentType);
+    const assessmentTypeError = validateAssessmentTypeForCourse(
+      course,
+      normalizedAssessmentType
+    );
+    if (assessmentTypeError) {
+      return res.status(400).json({ message: assessmentTypeError });
+    }
+
     const blueprint = await ObeAssessmentBlueprint.findOne({ _id: blueprintId, course: courseId });
     if (!blueprint) {
       return res.status(404).json({ message: 'Blueprint not found.' });
@@ -153,6 +220,16 @@ const updateObeBlueprint = async (req, res) => {
 
     const itemTotal = round2(normalizedItems.reduce((sum, item) => sum + Number(item.marks || 0), 0));
     const requestedTotal = round2(totalMarks);
+    const expectedLabMarks =
+      getCourseType(course) === 'lab'
+        ? getExpectedLabAssessmentMarks(normalizedAssessmentType)
+        : 0;
+
+    if (expectedLabMarks && requestedTotal !== expectedLabMarks) {
+      return res.status(400).json({
+        message: `${normalizedAssessmentType === 'mid' ? 'Lab Mid' : 'Lab Final'} must have a total of ${expectedLabMarks} marks.`,
+      });
+    }
 
     if (requestedTotal !== itemTotal) {
       return res.status(400).json({
@@ -161,9 +238,9 @@ const updateObeBlueprint = async (req, res) => {
     }
 
     blueprint.assessmentName = cleanText(assessmentName);
-    blueprint.assessmentType = cleanText(assessmentType).toLowerCase();
+    blueprint.assessmentType = normalizedAssessmentType;
     blueprint.totalMarks = requestedTotal;
-    blueprint.order = getAssessmentOrder(assessmentType);
+    blueprint.order = getAssessmentOrder(normalizedAssessmentType);
     blueprint.items = normalizedItems;
     blueprint.notes = cleanText(notes);
     await blueprint.save();

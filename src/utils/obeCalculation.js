@@ -12,6 +12,18 @@ const { buildContinuousAssessmentData } = require('./obeContinuousAssessment');
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const round4 = (value) => Math.round((Number(value) || 0) * 10000) / 10000;
 
+const getCourseType = (course = {}) => {
+  const type = String(course.courseType || course.type || '').trim().toLowerCase();
+  if (type === 'hybrid') return 'hybrid';
+  if (type.includes('lab')) return 'lab';
+  return 'theory';
+};
+
+const isExamBlueprint = (blueprint = {}) =>
+  ['mid', 'midterm', 'final'].includes(
+    String(blueprint.assessmentType || '').trim().toLowerCase()
+  );
+
 const findLevel = (percent, levels = []) => {
   const value = Number(percent) || 0;
   const matched = (Array.isArray(levels) ? levels : []).find(
@@ -94,7 +106,11 @@ const buildOutputData = async (courseId) => {
     (continuousAssessment.students || []).map((row) => [String(row.studentId), row])
   );
 
-  const blueprintById = new Map(blueprints.map((bp) => [String(bp._id), bp]));
+  const isLabCourse = getCourseType(course || {}) === 'lab';
+  const calculationBlueprints = isLabCourse
+    ? blueprints.filter(isExamBlueprint)
+    : blueprints;
+
   const outcomeList = courseOutcomes.map((co) => ({
     code: co.code,
     statement: co.statement,
@@ -103,7 +119,7 @@ const buildOutputData = async (courseId) => {
   const outcomeByCode = new Map(outcomeList.map((co) => [co.code, co]));
 
   let obeTotalPossibleMarks = 0;
-  for (const bp of blueprints) {
+  for (const bp of calculationBlueprints) {
     obeTotalPossibleMarks += Number(bp.totalMarks || 0);
     for (const item of bp.items || []) {
       const bucket = outcomeByCode.get(item.coCode);
@@ -112,14 +128,12 @@ const buildOutputData = async (courseId) => {
   }
 
   const examBlueprintIds = new Set(
-    blueprints
-      .filter((bp) => ['mid', 'midterm', 'final'].includes(String(bp.assessmentType || '').toLowerCase()))
-      .map((bp) => String(bp._id))
+    calculationBlueprints.filter(isExamBlueprint).map((bp) => String(bp._id))
   );
   const useFixedContinuousAssessment = continuousAssessment.enabled === true;
   const totalPossibleMarks = round2(
     (useFixedContinuousAssessment ? Number(continuousAssessment.totalMarks || 30) : 0) +
-      blueprints.reduce((sum, bp) => {
+      calculationBlueprints.reduce((sum, bp) => {
         if (useFixedContinuousAssessment && !examBlueprintIds.has(String(bp._id))) {
           return sum;
         }
@@ -135,39 +149,29 @@ const buildOutputData = async (courseId) => {
 
   const studentRows = students.map((student) => {
     const totalsByCo = Object.fromEntries(outcomeList.map((co) => [co.code, 0]));
+    const continuousHeaders = Array.isArray(continuousAssessment.headers)
+      ? continuousAssessment.headers
+      : [];
+    const emptyContinuousRow = Object.fromEntries(
+      continuousHeaders.map((header) => [header.key, 0])
+    );
     const continuousRow = continuousByStudent.get(student.studentId) || {
-      attendance: 0,
-      ct: 0,
-      assignment: 0,
+      ...emptyContinuousRow,
       total: 0,
     };
     let courseObtained = useFixedContinuousAssessment
       ? Number(continuousRow.total || 0)
       : 0;
     const assessmentTotals = useFixedContinuousAssessment
-      ? [
-          {
-            blueprintId: 'continuous-attendance',
-            assessmentName: 'Attendance',
-            totalMarks: Number(continuousRow.attendance || 0),
-            maxMarks: 5,
-          },
-          {
-            blueprintId: 'continuous-ct',
-            assessmentName: 'Class Test',
-            totalMarks: Number(continuousRow.ct || 0),
-            maxMarks: 15,
-          },
-          {
-            blueprintId: 'continuous-assignment',
-            assessmentName: 'Assignment',
-            totalMarks: Number(continuousRow.assignment || 0),
-            maxMarks: 10,
-          },
-        ]
+      ? continuousHeaders.map((header) => ({
+          blueprintId: `continuous-${header.key}`,
+          assessmentName: header.assessmentName || header.label || header.key,
+          totalMarks: Number(continuousRow[header.key] || 0),
+          maxMarks: Number(header.maxMarks || 0),
+        }))
       : [];
 
-    for (const bp of blueprints) {
+    for (const bp of calculationBlueprints) {
       const saved = markMap.get(`${student.studentId}__${String(bp._id)}`);
       const entryMap = new Map((saved?.entries || []).map((entry) => [entry.itemKey, Number(entry.obtainedMarks || 0)]));
       let blueprintTotal = 0;
@@ -219,9 +223,12 @@ const buildOutputData = async (courseId) => {
       courseMaxMarks: round2(totalPossibleMarks),
       continuousAssessment: useFixedContinuousAssessment
         ? {
-            attendance: round2(continuousRow.attendance),
-            ct: round2(continuousRow.ct),
-            assignment: round2(continuousRow.assignment),
+            ...Object.fromEntries(
+              continuousHeaders.map((header) => [
+                header.key,
+                round2(continuousRow[header.key]),
+              ])
+            ),
             total: round2(continuousRow.total),
           }
         : null,
@@ -313,7 +320,7 @@ const buildOutputData = async (courseId) => {
     totalPossibleMarks: round2(totalPossibleMarks),
     obeTotalPossibleMarks: round2(obeTotalPossibleMarks),
     continuousAssessment,
-    blueprints,
+    blueprints: calculationBlueprints,
     students: studentRows,
     coAttainment,
     poAttainment,

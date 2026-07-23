@@ -131,7 +131,83 @@ function sameMarks(left, right) {
   return Math.abs(Number(left || 0) - Number(right || 0)) < 1e-9;
 }
 
-function buildObeAssessmentMatches(blueprints = [], assessments = []) {
+function buildStructuredObeItemMapping(blueprint, assessment) {
+  const blueprintItems = [...(blueprint?.items || [])].sort(
+    (a, b) => Number(a?.order || 0) - Number(b?.order || 0)
+  );
+  const structuredItems = getStructuredAssessmentItems(assessment);
+
+  if (structuredItems.some((item) => item.synced === true)) {
+    return {
+      valid: false,
+      reason:
+        "This structured lab assessment contains submission-synced components, so it cannot be replaced from OBE/CO-PO.",
+      items: [],
+    };
+  }
+
+  if (!blueprintItems.length || blueprintItems.length !== structuredItems.length) {
+    return {
+      valid: false,
+      reason:
+        "The structured lab marksheet breakdown must have the same number of items as the OBE blueprint.",
+      items: [],
+    };
+  }
+
+  const structuredByKey = new Map(
+    structuredItems.map((item) => [String(item.key), item])
+  );
+  const keyMatchedItems = blueprintItems.map((blueprintItem) => {
+    const structuredItem = structuredByKey.get(String(blueprintItem.key));
+    if (
+      !structuredItem ||
+      !sameMarks(structuredItem.fullMarks, blueprintItem.marks)
+    ) {
+      return null;
+    }
+
+    return {
+      blueprintItemKey: String(blueprintItem.key),
+      assessmentItemKey: String(structuredItem.key),
+      fullMarks: Number(structuredItem.fullMarks || 0),
+    };
+  });
+
+  if (keyMatchedItems.every(Boolean)) {
+    return { valid: true, reason: "", items: keyMatchedItems };
+  }
+
+  const orderMatchedItems = blueprintItems.map((blueprintItem, index) => {
+    const structuredItem = structuredItems[index];
+    if (!structuredItem || !sameMarks(structuredItem.fullMarks, blueprintItem.marks)) {
+      return null;
+    }
+
+    return {
+      blueprintItemKey: String(blueprintItem.key),
+      assessmentItemKey: String(structuredItem.key),
+      fullMarks: Number(structuredItem.fullMarks || 0),
+    };
+  });
+
+  if (orderMatchedItems.every(Boolean)) {
+    return { valid: true, reason: "", items: orderMatchedItems };
+  }
+
+  return {
+    valid: false,
+    reason:
+      "The structured lab marksheet item marks must match the OBE blueprint item marks, either by key or by item order.",
+    items: [],
+  };
+}
+
+function buildObeAssessmentMatches(
+  blueprints = [],
+  assessments = [],
+  { allowStructuredLab = false } = {}
+) {
   const orderedBlueprints = [...blueprints].sort((a, b) => {
     const orderA = Number(a?.order ?? 0);
     const orderB = Number(b?.order ?? 0);
@@ -140,7 +216,8 @@ function buildObeAssessmentMatches(blueprints = [], assessments = []) {
   });
 
   const usableAssessments = assessments.filter(
-    (assessment) => assessment?.structureType !== "lab_final"
+    (assessment) =>
+      allowStructuredLab || assessment?.structureType !== "lab_final"
   );
 
   const matches = [];
@@ -149,9 +226,26 @@ function buildObeAssessmentMatches(blueprints = [], assessments = []) {
   const usedAssessmentIds = new Set();
 
   const addMatch = (blueprint, assessment, matchMethod) => {
-    matches.push({ blueprint, assessment, matchMethod });
+    let structuredItemMapping = [];
+
+    if (assessment?.structureType === "lab_final") {
+      const mapping = buildStructuredObeItemMapping(blueprint, assessment);
+      if (!mapping.valid) {
+        addSkipped(blueprint, mapping.reason);
+        return false;
+      }
+      structuredItemMapping = mapping.items;
+    }
+
+    matches.push({
+      blueprint,
+      assessment,
+      matchMethod,
+      structuredItemMapping,
+    });
     handledBlueprintIds.add(String(blueprint._id));
     usedAssessmentIds.add(String(assessment._id));
+    return true;
   };
 
   const addSkipped = (blueprint, reason) => {
@@ -560,15 +654,24 @@ const syncMarksFromObe = async (req, res) => {
     }
 
     const courseType = String(course.courseType || "theory").toLowerCase();
-    if (courseType !== "theory") {
+    if (!["theory", "lab"].includes(courseType)) {
       return res.status(400).json({
-        message: "OBE-to-marksheet fetching is currently available for theory courses only.",
+        message:
+          "OBE-to-marksheet fetching is currently available for theory and lab courses only.",
       });
+    }
+
+    const blueprintQuery = { course: courseId };
+    if (courseType === "lab") {
+      blueprintQuery.assessmentType = { $in: ["mid", "final"] };
     }
 
     const [assessments, blueprints, enrollments] = await Promise.all([
       Assessment.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
-      ObeAssessmentBlueprint.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
+      ObeAssessmentBlueprint.find(blueprintQuery).sort({
+        order: 1,
+        createdAt: 1,
+      }),
       Enrollment.find({ course: courseId }).select("student"),
     ]);
 
@@ -586,7 +689,8 @@ const syncMarksFromObe = async (req, res) => {
 
     const { matches, skipped } = buildObeAssessmentMatches(
       blueprints,
-      assessments
+      assessments,
+      { allowStructuredLab: courseType === "lab" }
     );
 
     if (!matches.length) {
@@ -608,7 +712,7 @@ const syncMarksFromObe = async (req, res) => {
       course: courseId,
       blueprint: { $in: blueprintIds },
       student: { $in: [...enrolledStudentIds] },
-    }).select("student blueprint totalMarks");
+    }).select("student blueprint totalMarks entries");
 
     const matchByBlueprintId = new Map(
       matches.map((match) => [String(match.blueprint._id), match])
@@ -626,8 +730,26 @@ const syncMarksFromObe = async (req, res) => {
       const match = matchByBlueprintId.get(String(obeMark.blueprint));
       if (!match) continue;
 
-      const obtainedMarks = round2(obeMark.totalMarks);
       const assessmentFullMarks = Number(match.assessment.fullMarks || 0);
+      let subMarks = [];
+      let obtainedMarks = round2(obeMark.totalMarks);
+
+      if (match.assessment?.structureType === "lab_final") {
+        const obeEntryMap = new Map(
+          (obeMark.entries || []).map((entry) => [
+            String(entry.itemKey),
+            Number(entry.obtainedMarks || 0),
+          ])
+        );
+
+        subMarks = (match.structuredItemMapping || []).map((item) => ({
+          key: item.assessmentItemKey,
+          obtainedMarks: round2(
+            obeEntryMap.get(String(item.blueprintItemKey)) || 0
+          ),
+        }));
+        obtainedMarks = sumSubMarks(subMarks);
+      }
 
       if (
         !Number.isFinite(obtainedMarks) ||
@@ -653,7 +775,7 @@ const syncMarksFromObe = async (req, res) => {
               assessment: match.assessment._id,
               obtainedMarks,
               status: "present",
-              subMarks: [],
+              subMarks,
             },
           },
           upsert: true,

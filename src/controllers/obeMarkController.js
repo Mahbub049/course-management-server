@@ -8,15 +8,34 @@ const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
 };
 
+const getCourseType = (course = {}) => {
+  const type = String(course.courseType || course.type || '').trim().toLowerCase();
+  if (type === 'hybrid') return 'hybrid';
+  if (type.includes('lab')) return 'lab';
+  return 'theory';
+};
+
+const isAllowedBlueprintForCourse = (course, blueprint = {}) => {
+  if (getCourseType(course) !== 'lab') return true;
+
+  const type = String(blueprint.assessmentType || '').trim().toLowerCase();
+  return ['mid', 'midterm', 'final'].includes(type);
+};
+
 const getObeMarkEntry = async (req, res) => {
   try {
     const { courseId } = req.params;
     const course = await findTeacherCourse(courseId, req.user.userId);
     if (!course) return res.status(404).json({ message: 'Course not found' });
 
+    const blueprintQuery = { course: courseId };
+    if (getCourseType(course) === 'lab') {
+      blueprintQuery.assessmentType = { $in: ['mid', 'final'] };
+    }
+
     const [enrollments, blueprints, marks] = await Promise.all([
       Enrollment.find({ course: courseId }).populate('student'),
-      ObeAssessmentBlueprint.find({ course: courseId }).sort({ order: 1, createdAt: 1 }),
+      ObeAssessmentBlueprint.find(blueprintQuery).sort({ order: 1, createdAt: 1 }),
       ObeStudentMark.find({ course: courseId }),
     ]);
 
@@ -32,8 +51,13 @@ const getObeMarkEntry = async (req, res) => {
     const enrolledStudentIds = new Set(
       students.map((student) => String(student.studentId))
     );
-    const activeMarks = marks.filter((mark) =>
-      enrolledStudentIds.has(String(mark.student))
+    const visibleBlueprintIds = new Set(
+      blueprints.map((blueprint) => String(blueprint._id))
+    );
+    const activeMarks = marks.filter(
+      (mark) =>
+        enrolledStudentIds.has(String(mark.student)) &&
+        visibleBlueprintIds.has(String(mark.blueprint))
     );
 
     return res.json({ students, blueprints, marks: activeMarks });
@@ -60,7 +84,11 @@ const saveObeMarks = async (req, res) => {
     ]);
 
     const enrolledStudentIds = new Set(enrollments.map((row) => String(row.student)));
-    const blueprintMap = new Map(blueprints.map((bp) => [String(bp._id), bp]));
+    const blueprintMap = new Map(
+      blueprints
+        .filter((blueprint) => isAllowedBlueprintForCourse(course, blueprint))
+        .map((blueprint) => [String(blueprint._id), blueprint])
+    );
 
     const bulkOps = [];
 
@@ -73,7 +101,12 @@ const saveObeMarks = async (req, res) => {
         return res.status(400).json({ message: 'Invalid student found in OBE marks save request.' });
       }
       if (!blueprint) {
-        return res.status(400).json({ message: 'Invalid blueprint found in OBE marks save request.' });
+        return res.status(400).json({
+          message:
+            getCourseType(course) === 'lab'
+              ? 'Lab OBE marks can only be entered for Lab Mid and Lab Final.'
+              : 'Invalid blueprint found in OBE marks save request.',
+        });
       }
 
       const itemMap = new Map((blueprint.items || []).map((item) => [item.key, item]));
