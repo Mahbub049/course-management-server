@@ -35,6 +35,13 @@ const userSchema = new mongoose.Schema(
       default: false,
     },
 
+    phone: {
+      type: String,
+      trim: true,
+      maxlength: 30,
+      default: "",
+    },
+
     pendingRecoveryEmail: {
       type: String,
       trim: true,

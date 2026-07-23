@@ -138,6 +138,8 @@ const login = async (req, res) => {
       firstLogin: user.firstLogin,
       name: user.name,
       username: user.username,
+      email: user.email || "",
+      phone: user.phone || "",
       shortCode: user.shortCode || "",
       designation: user.designation || "",
       department: user.department || "",
@@ -288,7 +290,7 @@ const getProfile = async (req, res) => {
     const userId = req.user?.userId || req.user?.id;
 
     const user = await User.findById(userId).select(
-      "username name role shortCode designation department profileImage"
+      "username name email phone role shortCode designation department profileImage"
     );
 
     if (!user) {
@@ -299,6 +301,8 @@ const getProfile = async (req, res) => {
       id: user._id,
       username: user.username,
       name: user.name,
+      email: user.email || "",
+      phone: user.phone || "",
       shortCode: user.shortCode || "",
       designation: user.designation || "",
       department: user.department || "",
@@ -315,7 +319,7 @@ const getProfile = async (req, res) => {
 const updateProfile = async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id;
-    const { username, name, shortCode, designation, profileImageBase64 } =
+    const { username, name, email, phone, shortCode, designation, profileImageBase64 } =
       req.body;
     const hasShortCode = Object.prototype.hasOwnProperty.call(
       req.body,
@@ -329,6 +333,8 @@ const updateProfile = async (req, res) => {
     if (
       !username &&
       !name &&
+      !Object.prototype.hasOwnProperty.call(req.body, "email") &&
+      !Object.prototype.hasOwnProperty.call(req.body, "phone") &&
       !hasShortCode &&
       !hasDesignation &&
       !profileImageBase64
@@ -370,6 +376,26 @@ const updateProfile = async (req, res) => {
 
     if (name) {
       update.name = String(name).trim();
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "email")) {
+      const cleanEmail = normalizeEmail(email);
+      if (!cleanEmail || !isValidEmail(cleanEmail)) {
+        return res.status(400).json({ message: "Please enter a valid email address." });
+      }
+      const existingEmail = await User.findOne({ email: cleanEmail, _id: { $ne: userId } });
+      if (existingEmail) {
+        return res.status(400).json({ message: "This email address is already in use." });
+      }
+      update.email = cleanEmail;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(req.body, "phone")) {
+      const cleanPhone = String(phone || "").trim();
+      if (cleanPhone.length > 30) {
+        return res.status(400).json({ message: "Phone number cannot exceed 30 characters." });
+      }
+      update.phone = cleanPhone;
     }
 
     if (hasShortCode) {
@@ -430,6 +456,8 @@ const updateProfile = async (req, res) => {
       id: user._id,
       username: user.username,
       name: user.name,
+      email: user.email || "",
+      phone: user.phone || "",
       shortCode: user.shortCode || "",
       designation: user.designation || "",
       department: user.department || "",

@@ -1,133 +1,273 @@
+const mongoose = require("mongoose");
 const Routine = require("../models/Routine");
 const Enrollment = require("../models/Enrollment");
 const CounsellingBooking = require("../models/CounsellingBooking");
 const User = require("../models/User");
+const Course = require("../models/Course");
 const { sendMail } = require("../utils/mailer");
+const {
+  OFFICIAL_DAYS,
+  OFFICIAL_TIME_SLOTS,
+  PRAYER_LUNCH,
+  ACTIVITY_TYPES,
+  DEFAULT_ROOMS,
+  cleanString,
+  normalizeDays,
+  normalizeWorkingDays,
+  normalizeRooms,
+  normalizeEntries,
+  repairLegacyClassFields,
+  validateRoutine,
+  buildLegacyCells,
+  buildCounsellingSlots,
+} = require("../utils/routineRules");
+const {
+  generateRoutineDocument,
+  generateNameplateDocument,
+  buildDownloadFilename,
+} = require("../utils/routineDocumentGenerator");
 
-const DEFAULT_DAYS = ["Mon", "Tue", "Wed", "Thu"];
-
-const DEFAULT_TIME_SLOTS = [
-  { id: "slot_1", label: "08:15 AM to\n09:45 AM\n(Day)", start: "08:15 AM", end: "09:45 AM", shift: "Day" },
-  { id: "slot_2", label: "11:15 AM to\n12:45 PM\n(Day)", start: "11:15 AM", end: "12:45 PM", shift: "Day" },
-  { id: "slot_3", label: "01:15 PM to\n02:45 PM\n(Day)", start: "01:15 PM", end: "02:45 PM", shift: "Day" },
-  { id: "slot_4", label: "04:15 PM to\n05:45 PM\n(Day)", start: "04:15 PM", end: "05:45 PM", shift: "Day" },
-  { id: "slot_5", label: "05:45 PM to\n07:00 PM\n(EVE)", start: "05:45 PM", end: "07:00 PM", shift: "EVE" },
-  { id: "slot_6", label: "07:00 PM to\n08:15 PM\n(EVE)", start: "07:00 PM", end: "08:15 PM", shift: "EVE" },
-  { id: "slot_7", label: "08:15 PM to\n09:30 PM\n(EVE)", start: "08:15 PM", end: "09:30 PM", shift: "EVE" },
-];
-
+const DEFAULT_DAYS = OFFICIAL_DAYS.map((item) => item.id);
+const DEFAULT_TIME_SLOTS = OFFICIAL_TIME_SLOTS;
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-function cleanString(value, fallback = "") {
-  if (value === undefined || value === null) return fallback;
-  return String(value).trim();
+function normalizeCourseDirectory(courses = []) {
+  return (Array.isArray(courses) ? courses : []).map((course) => ({
+    id: course._id?.toString?.() || course.id?.toString?.() || "",
+    code: cleanString(course.code).toUpperCase(),
+    title: cleanString(course.title),
+    intake: cleanString(course.intake),
+    section: cleanString(course.section),
+    courseType: ["theory", "lab", "hybrid"].includes(cleanString(course.courseType).toLowerCase())
+      ? cleanString(course.courseType).toLowerCase()
+      : "theory",
+    semester: cleanString(course.semester),
+    year: Number(course.year) || null,
+    shift: cleanString(course.shift),
+    department: cleanString(course.department),
+  }));
 }
 
-function normalizeDays(days) {
-  const arr = Array.isArray(days) ? days : DEFAULT_DAYS;
-  return arr.map((d) => cleanString(d)).filter(Boolean).slice(0, 7);
-}
+function parseLegacyCell(value, courses = []) {
+  const lines = String(value || "")
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return null;
 
-function normalizeTimeSlots(timeSlots) {
-  const arr = Array.isArray(timeSlots) && timeSlots.length ? timeSlots : DEFAULT_TIME_SLOTS;
+  const activityMap = {
+    CH: "CH",
+    DM: "DM",
+    DCW: "DCW",
+    IS: "IS",
+    "OBEI-W": "OBEI_W",
+    OBEI_W: "OBEI_W",
+    RW: "RW",
+  };
+  const first = lines[0].toUpperCase();
+  if (activityMap[first]) return { type: activityMap[first], label: first === "OBEI_W" ? "OBEI-W" : first };
 
-  return arr
-    .map((slot, index) => {
-      const id = cleanString(slot?.id, `slot_${index + 1}`).replace(/\s+/g, "_");
-      const label = cleanString(slot?.label, `Slot ${index + 1}`);
-      return {
-        id,
-        label,
-        start: cleanString(slot?.start),
-        end: cleanString(slot?.end),
-        shift: cleanString(slot?.shift),
-      };
-    })
-    .filter((slot) => slot.id && slot.label)
-    .slice(0, 12);
-}
-
-function normalizeCells(cells, days, timeSlots) {
-  const safeCells = {};
-  const raw = cells && typeof cells === "object" ? cells : {};
-
-  days.forEach((day) => {
-    safeCells[day] = {};
-    timeSlots.forEach((slot) => {
-      safeCells[day][slot.id] = cleanString(raw?.[day]?.[slot.id]);
-    });
+  const code = lines[0].toUpperCase();
+  const room = lines[1] || "";
+  const intakeSection = (lines[2] || "").split(/[\/-]/).map((item) => item.trim()).filter(Boolean);
+  const course = courses.find((item) => {
+    if (item.code !== code) return false;
+    if (intakeSection[0] && item.intake && item.intake !== intakeSection[0]) return false;
+    if (intakeSection[1] && item.section && item.section !== intakeSection[1]) return false;
+    return true;
   });
-
-  return safeCells;
-}
-
-function normalizeCourses(courses) {
-  const arr = Array.isArray(courses) ? courses : [];
-  return arr
-    .map((course) => ({
-      code: cleanString(course?.code),
-      title: cleanString(course?.title),
-      intake: cleanString(course?.intake),
-      section: cleanString(course?.section),
-      program: cleanString(course?.program),
-    }))
-    .filter((course) => course.code || course.title || course.intake || course.section || course.program)
-    .slice(0, 50);
-}
-
-function normalizeCounsellingSlots(counsellingSlots, days, timeSlots, cells) {
-  const raw = Array.isArray(counsellingSlots) ? counsellingSlots : [];
-  const daySet = new Set(days);
-  const slotSet = new Set(timeSlots.map((slot) => slot.id));
-  const seen = new Set();
-  const result = [];
-
-  raw.forEach((item) => {
-    const day = cleanString(item?.day);
-    const slotId = cleanString(item?.slotId || item?.id);
-    const key = `${day}__${slotId}`;
-
-    if (!daySet.has(day) || !slotSet.has(slotId) || seen.has(key)) return;
-
-    // Counselling hour must be selected from a routine slot that is free from class.
-    if (cleanString(cells?.[day]?.[slotId])) return;
-
-    seen.add(key);
-    result.push({ day, slotId });
-  });
-
-  return result.slice(0, 30);
-}
-
-function normalizePayload(body = {}) {
-  const days = normalizeDays(body.days);
-  const timeSlots = normalizeTimeSlots(body.timeSlots);
-  const cells = normalizeCells(body.cells, days, timeSlots);
 
   return {
-    title: cleanString(body.title, "Class Routine"),
-    universityName: cleanString(
-      body.universityName,
-      "Bangladesh University of Business and Technology (BUBT)"
-    ),
-    facultyName: cleanString(body.facultyName),
-    facultyCode: cleanString(body.facultyCode),
-    department: cleanString(body.department),
-    buildingNote: cleanString(body.buildingNote),
-    revision: cleanString(body.revision),
-    lastModifiedText: cleanString(body.lastModifiedText),
+    type: "CLASS",
+    courseId: course?.id || "",
+    courseCode: code,
+    courseTitle: course?.title || "",
+    intake: intakeSection[0] || course?.intake || "",
+    section: intakeSection[1] || course?.section || "",
+    room,
+    courseType: course?.courseType || "theory",
+    courseShift: course?.shift || "",
+    linkedGroupId: "",
+    secondLabDayConfirmed: false,
+  };
+}
+
+const LEGACY_CELL_SLOT_MAP_9 = {
+  slot_1: "day_0815_0945", slot_2: "day_0945_1115", slot_3: "day_1115_1245",
+  slot_4: "day_1315_1445", slot_5: "day_1445_1615", slot_6: "day_1615_1745",
+  slot_7: "eve_1745_1900", slot_8: "eve_1900_2015", slot_9: "eve_2015_2130",
+};
+const LEGACY_CELL_SLOT_MAP_7 = {
+  slot_1: "day_0815_0945", slot_2: "day_1115_1245", slot_3: "day_1315_1445",
+  slot_4: "day_1615_1745", slot_5: "eve_1745_1900", slot_6: "eve_1900_2015",
+  slot_7: "eve_2015_2130",
+};
+
+function upgradeLegacyEntries(routine, courses) {
+  if (routine?.entries && Object.keys(routine.entries).length) return routine.entries;
+  const entries = {};
+  const cellKeys = Object.values(routine?.cells || {}).flatMap((day) => Object.keys(day || {}));
+  const legacyMap = cellKeys.includes("slot_8") || cellKeys.includes("slot_9")
+    ? LEGACY_CELL_SLOT_MAP_9
+    : LEGACY_CELL_SLOT_MAP_7;
+  const reverseLegacy = Object.fromEntries(Object.entries(legacyMap).map(([oldId, newId]) => [newId, oldId]));
+
+  DEFAULT_DAYS.forEach((day) => {
+    entries[day] = {};
+    OFFICIAL_TIME_SLOTS.forEach((slot) => {
+      const oldId = reverseLegacy[slot.id];
+      const value = routine?.cells?.[day]?.[slot.id] || (oldId ? routine?.cells?.[day]?.[oldId] : "");
+      entries[day][slot.id] = parseLegacyCell(value, courses);
+    });
+  });
+  return entries;
+}
+
+function inferSemesterYear(courses = []) {
+  const sorted = [...courses].sort((a, b) => {
+    const yearDiff = (Number(b.year) || 0) - (Number(a.year) || 0);
+    if (yearDiff) return yearDiff;
+    const order = { Spring: 1, Summer: 2, Fall: 3 };
+    return (order[b.semester] || 0) - (order[a.semester] || 0);
+  });
+  return { semester: sorted[0]?.semester || "", year: sorted[0]?.year || new Date().getFullYear() };
+}
+
+async function getRoutineContext(teacherId) {
+  const [teacherResult, courseResult] = await Promise.allSettled([
+    User.findById(teacherId)
+      .select("name email phone department designation shortCode profileImage")
+      .lean(),
+    Course.find({ createdBy: teacherId, archived: { $ne: true } })
+      .select("code title intake section courseType semester year shift department")
+      .sort({ year: -1, semester: -1, code: 1 })
+      .lean(),
+  ]);
+
+  if (teacherResult.status === "rejected") console.warn("Routine profile lookup failed:", teacherResult.reason?.message);
+  if (courseResult.status === "rejected") console.warn("Routine course lookup failed:", courseResult.reason?.message);
+
+  return {
+    teacher: teacherResult.status === "fulfilled" ? teacherResult.value : null,
+    courses: normalizeCourseDirectory(courseResult.status === "fulfilled" ? courseResult.value : []),
+  };
+}
+
+async function findRoutineRaw(teacherId) {
+  const teacher = mongoose.isValidObjectId(teacherId)
+    ? new mongoose.Types.ObjectId(teacherId)
+    : teacherId;
+  const routine = await Routine.collection.findOne({ teacher });
+  if (routine || String(teacher) === String(teacherId)) return routine;
+  return Routine.collection.findOne({ teacher: String(teacherId) });
+}
+
+function courseSnapshotKey(course = {}) {
+  return [course.code || course.courseCode, course.intake, course.section]
+    .map((value) => cleanString(value).toLowerCase())
+    .join("|");
+}
+
+function applyCourseMetadata(entries, courses = []) {
+  const byId = new Map(courses.map((course) => [cleanString(course.id), course]));
+  const bySnapshot = new Map(courses.map((course) => [courseSnapshotKey(course), course]));
+  const byCode = new Map();
+  courses.forEach((course) => {
+    const code = cleanString(course.code).toLowerCase();
+    if (!byCode.has(code)) byCode.set(code, []);
+    byCode.get(code).push(course);
+  });
+
+  Object.values(entries || {}).forEach((dayEntries) => {
+    Object.values(dayEntries || {}).forEach((entry) => {
+      if (!entry || entry.type !== "CLASS") return;
+
+      Object.assign(entry, repairLegacyClassFields(entry));
+      const exactSnapshot = bySnapshot.get(courseSnapshotKey(entry));
+      const exactId = byId.get(cleanString(entry.courseId));
+      const sameCode = byCode.get(cleanString(entry.courseCode).toLowerCase()) || [];
+      const partialMatch = sameCode.find((course) => {
+        const intakeMatches = !entry.intake || !course.intake || cleanString(course.intake).toLowerCase() === cleanString(entry.intake).toLowerCase();
+        const sectionMatches = !entry.section || !course.section || cleanString(course.section).toLowerCase() === cleanString(entry.section).toLowerCase();
+        return intakeMatches && sectionMatches;
+      });
+      const course = exactSnapshot || exactId || partialMatch || (sameCode.length === 1 ? sameCode[0] : null);
+      if (!course) return;
+
+      // Canonicalize every cell in the pair. This repairs old routines where
+      // only one auto-filled lab cell retained the courseId or where room and
+      // intake/section were stored in the opposite fields.
+      entry.courseId = course.id || entry.courseId || "";
+      entry.courseCode = course.code || entry.courseCode || "";
+      entry.courseTitle = course.title || entry.courseTitle || "";
+      entry.intake = course.intake || entry.intake || "";
+      entry.section = course.section || entry.section || "";
+      entry.courseShift = course.shift || entry.courseShift || "";
+      entry.courseType = course.courseType || entry.courseType || "theory";
+    });
+  });
+  return entries;
+}
+
+function normalizePayload(body = {}, context = {}) {
+  const days = normalizeDays(body.days);
+  const workingDays = normalizeWorkingDays(body.workingDays, days);
+  const rooms = normalizeRooms(body.rooms);
+  const courses = context.courses || normalizeCourseDirectory(body.courses || []);
+  const entries = applyCourseMetadata(normalizeEntries(body.entries, days, workingDays), courses);
+  const teacher = context.teacher || {};
+  const inferred = inferSemesterYear(courses);
+  const semester = cleanString(body.semester, inferred.semester);
+  const year = Number(body.year || inferred.year);
+  const validation = validateRoutine({ days, workingDays, entries, semester, year, rooms });
+  const facultyDepartment = cleanString(teacher.department || body.department, "Department of Computer Science and Engineering");
+
+  return {
+    title: "Class Routine and Weekly Activities",
+    universityName: "Bangladesh University of Business and Technology (BUBT)",
+    facultyName: cleanString(teacher.name || body.facultyName),
+    facultyCode: cleanString(teacher.shortCode || body.facultyCode),
+    designation: cleanString(teacher.designation || body.designation, "Lecturer"),
+    department: facultyDepartment,
+    facultyEmail: cleanString(teacher.email || body.facultyEmail),
+    facultyPhone: cleanString(teacher.phone || body.facultyPhone),
+    facultyProfileImage: cleanString(teacher.profileImage || body.facultyProfileImage),
+    semester,
+    year,
     days,
-    timeSlots,
-    cells,
-    courses: normalizeCourses(body.courses),
-    counsellingSlots: normalizeCounsellingSlots(
-      body.counsellingSlots,
-      days,
-      timeSlots,
-      cells
-    ),
-    sourceFileName: cleanString(body.sourceFileName),
-    importedAt: body.importedAt ? new Date(body.importedAt) : new Date(),
+    workingDays,
+    timeSlots: OFFICIAL_TIME_SLOTS,
+    rooms,
+    entries,
+    cells: buildLegacyCells(entries, days),
+    courses,
+    counsellingSlots: buildCounsellingSlots(entries, workingDays),
+    validation: {
+      canSave: validation.canSave,
+      isValid: validation.isValid,
+      blockingErrors: validation.blockingErrors,
+      completionErrors: validation.completionErrors,
+      errors: validation.errors,
+      warnings: validation.warnings,
+      summary: validation.summary,
+    },
+    totalWorkingHours: validation.summary.totalWorkingHours,
+    sourceFileName: "",
+    importedAt: new Date(),
+  };
+}
+
+function routineDefaults(context = {}) {
+  const inferred = inferSemesterYear(context.courses || []);
+  return {
+    days: DEFAULT_DAYS,
+    workingDays: ["Sun", "Mon", "Tue", "Wed", "Thu"],
+    timeSlots: OFFICIAL_TIME_SLOTS,
+    prayerLunch: PRAYER_LUNCH,
+    activityTypes: ACTIVITY_TYPES,
+    rooms: DEFAULT_ROOMS,
+    semester: inferred.semester,
+    year: inferred.year,
   };
 }
 
@@ -491,22 +631,60 @@ async function resolveStudentTeacher(studentId) {
   };
 }
 
+const getRoutineReferenceData = async (_req, res) => {
+  return res.json({
+    universityName: "Bangladesh University of Business and Technology (BUBT)",
+    days: OFFICIAL_DAYS,
+    timeSlots: OFFICIAL_TIME_SLOTS,
+    prayerLunch: PRAYER_LUNCH,
+    rooms: DEFAULT_ROOMS,
+    buildings: [...new Set(DEFAULT_ROOMS.map((room) => room.buildingName))],
+    roomTypes: [...new Set(DEFAULT_ROOMS.map((room) => room.roomTitle))],
+  });
+};
+
 const getMyRoutine = async (req, res) => {
   try {
     const teacherId = req.user.userId;
-    const routine = await Routine.findOne({ teacher: teacherId }).lean();
+    const [routineDoc, context] = await Promise.all([
+      findRoutineRaw(teacherId),
+      getRoutineContext(teacherId),
+    ]);
 
-    if (!routine) {
-      return res.json({
-        routine: null,
-        defaults: {
-          days: DEFAULT_DAYS,
-          timeSlots: DEFAULT_TIME_SLOTS,
-        },
-      });
+    const defaults = routineDefaults(context);
+    const profile = {
+      name: context.teacher?.name || "",
+      email: context.teacher?.email || "",
+      phone: context.teacher?.phone || "",
+      department: context.teacher?.department || "",
+      designation: context.teacher?.designation || "",
+      shortCode: context.teacher?.shortCode || "",
+      profileImage: context.teacher?.profileImage || "",
+    };
+
+    if (!routineDoc) {
+      return res.json({ routine: null, defaults, profile, courses: context.courses });
     }
 
-    return res.json({ routine });
+    const source = {
+      ...routineDoc,
+      entries: upgradeLegacyEntries(routineDoc, context.courses),
+      courses: context.courses,
+      rooms: routineDoc.rooms?.length ? routineDoc.rooms : DEFAULT_ROOMS,
+      days: routineDoc.days?.length ? routineDoc.days : DEFAULT_DAYS,
+      workingDays: routineDoc.workingDays?.length
+        ? routineDoc.workingDays
+        : ["Sun", "Mon", "Tue", "Wed", "Thu"],
+      semester: routineDoc.semester || defaults.semester,
+      year: routineDoc.year || defaults.year,
+      facultyPhone: routineDoc.facultyPhone || context.teacher?.phone || "",
+    };
+    const routine = normalizePayload(source, context);
+    routine._id = routineDoc._id;
+    routine.createdAt = routineDoc.createdAt;
+    routine.updatedAt = routineDoc.updatedAt;
+
+    return res.json({ routine, defaults, profile, courses: context.courses });
   } catch (err) {
     console.error("getMyRoutine error:", err);
     return res.status(500).json({ message: "Failed to load routine" });
@@ -516,7 +694,15 @@ const getMyRoutine = async (req, res) => {
 const saveMyRoutine = async (req, res) => {
   try {
     const teacherId = req.user.userId;
-    const update = normalizePayload(req.body);
+    const context = await getRoutineContext(teacherId);
+    const update = normalizePayload(req.body, context);
+
+    if (!update.validation.canSave) {
+      return res.status(400).json({
+        message: "Please correct the highlighted routine conflicts before saving.",
+        validation: update.validation,
+      });
+    }
 
     const routine = await Routine.findOneAndUpdate(
       { teacher: teacherId },
@@ -530,6 +716,49 @@ const saveMyRoutine = async (req, res) => {
     return res.status(500).json({ message: "Failed to save routine" });
   }
 };
+
+async function downloadMyRoutineDocument(req, res, kind) {
+  try {
+    const teacherId = req.user.userId;
+    const [routineDoc, context] = await Promise.all([
+      findRoutineRaw(teacherId),
+      getRoutineContext(teacherId),
+    ]);
+
+    if (!routineDoc) return res.status(404).json({ message: "Create and save the routine first." });
+
+    const routine = normalizePayload(
+      {
+        ...routineDoc,
+        entries: upgradeLegacyEntries(routineDoc, context.courses),
+        courses: context.courses,
+      },
+      context
+    );
+
+    if (!routine.validation.isValid) {
+      return res.status(409).json({
+        message: "The saved routine does not meet all weekly rules.",
+        validation: routine.validation,
+      });
+    }
+
+    const buffer = kind === "nameplate"
+      ? await generateNameplateDocument(routine)
+      : await generateRoutineDocument(routine);
+    const filename = buildDownloadFilename(routine, kind);
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(buffer);
+  } catch (err) {
+    console.error(`download ${kind} routine document error:`, err);
+    return res.status(500).json({ message: "Failed to generate the Word document." });
+  }
+}
+
+const downloadMyClassRoutine = (req, res) => downloadMyRoutineDocument(req, res, "routine");
+const downloadMyFacultyNameplate = (req, res) => downloadMyRoutineDocument(req, res, "nameplate");
 
 const getStudentCounsellingInfo = async (req, res) => {
   try {
@@ -547,7 +776,7 @@ const getStudentCounsellingInfo = async (req, res) => {
     }
 
     const [routine, bookings] = await Promise.all([
-      Routine.findOne({ teacher: teacherId }).lean(),
+      findRoutineRaw(teacherId),
       CounsellingBooking.find({ student: studentId, teacher: teacherId })
         .populate("course", "code title intake section")
         .sort({ createdAt: -1 })
@@ -605,7 +834,7 @@ const createStudentCounsellingBooking = async (req, res) => {
       return res.status(400).json({ message: "Invalid date format" });
     }
 
-    const routine = await Routine.findOne({ teacher: teacherId }).lean();
+    const routine = await findRoutineRaw(teacherId);
     const slotInfo = getSlotInfo(routine, day, slotId);
 
     if (!slotInfo) {
@@ -701,7 +930,7 @@ const getTeacherCounsellingBookings = async (req, res) => {
     const teacherId = req.user.userId;
 
     const [routine, bookings] = await Promise.all([
-      Routine.findOne({ teacher: teacherId }).lean(),
+      findRoutineRaw(teacherId),
       CounsellingBooking.find({ teacher: teacherId })
         .populate("student", "name username profileImage")
         .populate("course", "code title intake section")
@@ -767,7 +996,7 @@ const updateTeacherCounsellingBooking = async (req, res) => {
         return res.status(400).json({ message: "Invalid alternate date format" });
       }
 
-      const routine = await Routine.findOne({ teacher: teacherId }).lean();
+      const routine = await findRoutineRaw(teacherId);
       const alternateSlot = getRoutineTimeSlot(routine, alternateSlotId);
 
       if (!alternateSlot) {
@@ -826,8 +1055,11 @@ const deleteTeacherCounsellingBooking = async (req, res) => {
 };
 
 module.exports = {
+  getRoutineReferenceData,
   getMyRoutine,
   saveMyRoutine,
+  downloadMyClassRoutine,
+  downloadMyFacultyNameplate,
   getStudentCounsellingInfo,
   createStudentCounsellingBooking,
   deleteStudentCounsellingBooking,

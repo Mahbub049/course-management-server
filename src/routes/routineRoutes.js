@@ -7,8 +7,11 @@ const {
   requireStudent,
 } = require("../middleware/authMiddleware");
 const {
+  getRoutineReferenceData,
   getMyRoutine,
   saveMyRoutine,
+  downloadMyClassRoutine,
+  downloadMyFacultyNameplate,
   getStudentCounsellingInfo,
   createStudentCounsellingBooking,
   deleteStudentCounsellingBooking,
@@ -17,10 +20,14 @@ const {
   deleteTeacherCounsellingBooking,
 } = require("../controllers/routineController");
 
+router.get("/reference-data", getRoutineReferenceData);
+
 router.use(authMiddleware);
 
 router.get("/my", requireTeacher, getMyRoutine);
 router.put("/my", requireTeacher, saveMyRoutine);
+router.get("/my/download/class-routine", requireTeacher, downloadMyClassRoutine);
+router.get("/my/download/faculty-nameplate", requireTeacher, downloadMyFacultyNameplate);
 
 router.get("/my/counselling-bookings", requireTeacher, getTeacherCounsellingBookings);
 // Backward-compatible aliases for any older local client file that still calls underscore URLs.
