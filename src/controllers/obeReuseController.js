@@ -234,6 +234,9 @@ const reuseObeData = async (req, res) => {
             mappings: copyMappings(sourceConfig.mappings || []),
             attainmentLevels: copyAttainmentLevels(sourceConfig.attainmentLevels || []),
             notes: cleanText(sourceConfig.notes),
+            courseReportComment1: cleanText(sourceConfig.courseReportComment1),
+            courseReportComment2: cleanText(sourceConfig.courseReportComment2),
+            courseReportGeneralComment: cleanText(sourceConfig.courseReportGeneralComment),
           },
         },
         { new: true, upsert: true, setDefaultsOnInsert: true }

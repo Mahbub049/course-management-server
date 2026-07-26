@@ -1,6 +1,7 @@
 const Course = require('../models/Course');
 const CourseOutcome = require('../models/CourseOutcome');
 const ObeAssessmentBlueprint = require('../models/ObeAssessmentBlueprint');
+const ObeStudentMark = require('../models/ObeStudentMark');
 
 const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
@@ -269,7 +270,9 @@ const deleteObeBlueprint = async (req, res) => {
       return res.status(404).json({ message: 'Blueprint not found.' });
     }
 
-    return res.json({ message: 'Blueprint deleted successfully.' });
+    await ObeStudentMark.deleteMany({ course: courseId, blueprint: blueprintId });
+
+    return res.json({ message: 'Blueprint and its OBE mark records deleted successfully.' });
   } catch (error) {
     console.error('deleteObeBlueprint error', error);
     return res.status(500).json({ message: 'Server error' });

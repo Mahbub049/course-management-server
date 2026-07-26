@@ -125,14 +125,19 @@ const getAttendanceContribution = ({
   attendanceByStudent,
   attendanceAssessment,
 }) => {
+  // The marksheet may contain a manually adjusted Attendance mark. Prefer that
+  // saved Mark record so OBE/CO-PO always follows the latest marksheet value.
+  // AttendanceSummary is only a fallback when no marksheet Attendance mark exists.
+  if (attendanceAssessment) {
+    const mark = studentMarks.get(stringId(attendanceAssessment));
+    if (mark) {
+      return percentageForMark(mark, attendanceAssessment) * 5;
+    }
+  }
+
   const attendanceSummary = attendanceByStudent.get(studentId);
   if (attendanceSummary && Number.isFinite(Number(attendanceSummary.marks))) {
     return clamp(Number(attendanceSummary.marks), 0, 5);
-  }
-
-  if (attendanceAssessment) {
-    const mark = studentMarks.get(stringId(attendanceAssessment));
-    return percentageForMark(mark, attendanceAssessment) * 5;
   }
 
   return 0;

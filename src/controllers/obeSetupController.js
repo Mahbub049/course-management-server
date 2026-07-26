@@ -88,6 +88,9 @@ const getObeSetup = async (req, res) => {
       mappings: config?.mappings || [],
       attainmentLevels: config?.attainmentLevels || [],
       notes: config?.notes || '',
+      courseReportComment1: config?.courseReportComment1 || '',
+      courseReportComment2: config?.courseReportComment2 || '',
+      courseReportGeneralComment: config?.courseReportGeneralComment || '',
     });
   } catch (error) {
     console.error('getObeSetup error', error);
@@ -106,6 +109,9 @@ const saveObeSetup = async (req, res) => {
       mappings = [],
       attainmentLevels = [],
       notes = '',
+      courseReportComment1 = '',
+      courseReportComment2 = '',
+      courseReportGeneralComment = '',
     } = req.body || {};
 
     const course = await findTeacherCourse(courseId, req.user.userId);
@@ -163,6 +169,9 @@ const saveObeSetup = async (req, res) => {
           mappings: normalizedMappings,
           attainmentLevels: normalizedLevels,
           notes: cleanText(notes),
+          courseReportComment1: cleanText(courseReportComment1),
+          courseReportComment2: cleanText(courseReportComment2),
+          courseReportGeneralComment: cleanText(courseReportGeneralComment),
         },
       },
       { new: true, upsert: true, setDefaultsOnInsert: true }

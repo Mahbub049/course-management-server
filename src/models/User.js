@@ -99,6 +99,11 @@ const userSchema = new mongoose.Schema(
       default: "",
     },
 
+    signatureImage: {
+      type: String,
+      default: "",
+    },
+
     passwordHash: {
       type: String,
       required: true,

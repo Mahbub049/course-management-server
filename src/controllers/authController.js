@@ -144,6 +144,7 @@ const login = async (req, res) => {
       designation: user.designation || "",
       department: user.department || "",
       profileImage: user.profileImage || "",
+      signatureImage: user.signatureImage || "",
     });
   } catch (err) {
     console.error("Login error", err);
@@ -290,7 +291,7 @@ const getProfile = async (req, res) => {
     const userId = req.user?.userId || req.user?.id;
 
     const user = await User.findById(userId).select(
-      "username name email phone role shortCode designation department profileImage"
+      "username name email phone role shortCode designation department profileImage signatureImage"
     );
 
     if (!user) {
@@ -308,6 +309,7 @@ const getProfile = async (req, res) => {
       department: user.department || "",
       role: user.role,
       profileImage: user.profileImage || "",
+      signatureImage: user.signatureImage || "",
     });
   } catch (err) {
     console.error("getProfile error", err);
@@ -319,8 +321,17 @@ const getProfile = async (req, res) => {
 const updateProfile = async (req, res) => {
   try {
     const userId = req.user?.userId || req.user?.id;
-    const { username, name, email, phone, shortCode, designation, profileImageBase64 } =
-      req.body;
+    const {
+      username,
+      name,
+      email,
+      phone,
+      shortCode,
+      designation,
+      department,
+      profileImageBase64,
+      signatureImageBase64,
+    } = req.body;
     const hasShortCode = Object.prototype.hasOwnProperty.call(
       req.body,
       "shortCode"
@@ -328,6 +339,10 @@ const updateProfile = async (req, res) => {
     const hasDesignation = Object.prototype.hasOwnProperty.call(
       req.body,
       "designation"
+    );
+    const hasDepartment = Object.prototype.hasOwnProperty.call(
+      req.body,
+      "department"
     );
 
     if (
@@ -337,7 +352,9 @@ const updateProfile = async (req, res) => {
       !Object.prototype.hasOwnProperty.call(req.body, "phone") &&
       !hasShortCode &&
       !hasDesignation &&
-      !profileImageBase64
+      !hasDepartment &&
+      !profileImageBase64 &&
+      !signatureImageBase64
     ) {
       return res.status(400).json({ message: "Nothing to update." });
     }
@@ -435,12 +452,50 @@ const updateProfile = async (req, res) => {
       update.designation = cleanDesignation;
     }
 
+    if (hasDepartment) {
+      const cleanDepartment = String(department || "").trim();
+
+      if (!cleanDepartment) {
+        return res.status(400).json({
+          message: "Please select your department.",
+        });
+      }
+
+      if (cleanDepartment.length > 100) {
+        return res.status(400).json({
+          message: "Department cannot exceed 100 characters.",
+        });
+      }
+
+      const account = await User.findById(userId).select("role");
+
+      if (!account) {
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      if (account.role !== "teacher") {
+        return res.status(403).json({
+          message: "Only teacher accounts can update department.",
+        });
+      }
+
+      update.department = cleanDepartment;
+    }
+
     if (profileImageBase64) {
       const imageUrl = await uploadBase64ToImgbb(
         profileImageBase64,
         `user_${userId}_${Date.now()}`
       );
       update.profileImage = imageUrl;
+    }
+
+    if (signatureImageBase64) {
+      const signatureUrl = await uploadBase64ToImgbb(
+        signatureImageBase64,
+        `signature_${userId}_${Date.now()}`
+      );
+      update.signatureImage = signatureUrl;
     }
 
     const user = await User.findByIdAndUpdate(userId, update, {
@@ -463,6 +518,7 @@ const updateProfile = async (req, res) => {
       department: user.department || "",
       role: user.role,
       profileImage: user.profileImage || "",
+      signatureImage: user.signatureImage || "",
     });
   } catch (err) {
     console.error("updateProfile error", err);

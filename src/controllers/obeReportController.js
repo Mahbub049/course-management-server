@@ -1286,7 +1286,7 @@ const buildChairTable = () => {
 const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId }).populate(
     "createdBy",
-    "name username email department designation"
+    "name username email department designation shortCode signatureImage"
   );
 };
 
@@ -1328,6 +1328,7 @@ const getObeExportPayload = async (req, res) => {
       enrolledStudentIds.has(String(mark.student))
     );
 
+    res.set("Cache-Control", "no-store");
     return res.json({
       course,
       setup: setup || null,

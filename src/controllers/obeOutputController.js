@@ -12,6 +12,7 @@ const getObeOutput = async (req, res) => {
     if (!course) return res.status(404).json({ message: 'Course not found' });
 
     const data = await buildOutputData(courseId);
+    res.set('Cache-Control', 'no-store');
     return res.json(data);
   } catch (error) {
     console.error('getObeOutput error', error);
