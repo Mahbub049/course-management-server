@@ -8,6 +8,7 @@ const {
   getStudentAttendanceSheet,
   getAttendanceByDay,
   updateAttendanceByDay,
+  copyAttendancePeriod,
   deleteAttendanceByDay,
 } = require("../controllers/attendanceController");
 
@@ -22,6 +23,7 @@ router.post("/", authMiddleware, requireTeacher, createAttendance);
 
 // Bulk-period create
 router.post("/bulk", authMiddleware, requireTeacher, createAttendanceBulk);
+router.post("/copy", authMiddleware, requireTeacher, copyAttendancePeriod);
 
 router.get("/sheet", authMiddleware, requireTeacher, getAttendanceSheet);
 router.get("/student-sheet", authMiddleware, requireStudent, getStudentAttendanceSheet);

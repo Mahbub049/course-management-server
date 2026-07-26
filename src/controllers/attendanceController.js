@@ -467,6 +467,129 @@ const updateAttendanceByDay = async (req, res) => {
   }
 };
 
+// -------------------- COPY (one saved period to another) --------------------
+// POST /api/attendance/copy
+// body: { courseId, sourceDate, sourcePeriod, targetDate, targetPeriod, overwrite }
+const copyAttendancePeriod = async (req, res) => {
+  try {
+    const teacherId = req.user?.userId || req.user?.id;
+    if (!teacherId) return res.status(401).json({ message: "Unauthorized" });
+
+    const {
+      courseId,
+      sourceDate,
+      sourcePeriod,
+      targetDate,
+      targetPeriod,
+      overwrite = true,
+    } = req.body || {};
+
+    if (!courseId || !sourceDate || !sourcePeriod || !targetDate || !targetPeriod) {
+      return res.status(400).json({
+        message: "courseId, source date/period and target date/period are required",
+      });
+    }
+
+    const sourceP = Number(sourcePeriod);
+    const targetP = Number(targetPeriod);
+    if (!Number.isInteger(sourceP) || sourceP < 1 || !Number.isInteger(targetP) || targetP < 1) {
+      return res.status(400).json({ message: "Source and target periods must be valid period numbers." });
+    }
+
+    if (String(sourceDate) === String(targetDate) && sourceP === targetP) {
+      return res.status(400).json({ message: "Source and target attendance cannot be the same." });
+    }
+
+    const course = await Course.findOne({ _id: courseId, createdBy: teacherId });
+    if (!course) {
+      return res.status(404).json({ message: "Course not found for this teacher" });
+    }
+
+    const sourceRange = dayRange(sourceDate);
+    let source = await Attendance.findOne({
+      teacher: teacherId,
+      course: courseId,
+      date: { $gte: sourceRange.start, $lte: sourceRange.end },
+      period: sourceP,
+    }).select("records period numClasses");
+
+    // Legacy attendance stored one document for several periods. In that format
+    // every represented period has the same attendance records.
+    if (!source) {
+      const legacy = await Attendance.findOne({
+        teacher: teacherId,
+        course: courseId,
+        date: { $gte: sourceRange.start, $lte: sourceRange.end },
+        period: { $exists: false },
+      }).select("records numClasses");
+
+      if (legacy && sourceP <= Number(legacy.numClasses || 1)) {
+        source = legacy;
+      }
+    }
+
+    if (!source) {
+      return res.status(404).json({
+        message: `No attendance found for Period ${sourceP} on ${sourceDate}.`,
+      });
+    }
+
+    const copiedRecords = (source.records || []).map((r) => ({
+      roll: String(r.roll),
+      present: !!r.present,
+    }));
+
+    const targetRange = dayRange(targetDate);
+    let target = await Attendance.findOne({
+      teacher: teacherId,
+      course: courseId,
+      date: { $gte: targetRange.start, $lte: targetRange.end },
+      period: targetP,
+    });
+
+    let action = "created";
+    if (target) {
+      if (!overwrite) {
+        return res.status(409).json({
+          message: `Attendance already exists for Period ${targetP} on ${targetDate}. Enable overwrite to replace it.`,
+        });
+      }
+      target.records = copiedRecords;
+      target.section = course.section;
+      target.numClasses = 1;
+      await target.save();
+      action = "overwritten";
+    } else {
+      target = await Attendance.create({
+        teacher: teacherId,
+        course: courseId,
+        section: course.section,
+        date: dateOnly(targetDate),
+        period: targetP,
+        numClasses: 1,
+        records: copiedRecords,
+      });
+    }
+
+    const present = copiedRecords.filter((r) => r.present).length;
+    return res.json({
+      message: `Attendance ${action} successfully.`,
+      action,
+      source: { date: sourceDate, period: sourceP },
+      target: { date: targetDate, period: targetP },
+      totalStudents: copiedRecords.length,
+      present,
+      absent: copiedRecords.length - present,
+    });
+  } catch (err) {
+    console.error("copyAttendancePeriod error:", err);
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "Attendance already exists for the target period." });
+    }
+    return res.status(500).json({ message: "Failed to copy attendance" });
+  }
+};
+
 // -------------------- DELETE (day + period) --------------------
 // DELETE /api/attendance/day?courseId=...&date=YYYY-MM-DD&period=1
 const deleteAttendanceByDay = async (req, res) => {
@@ -521,5 +644,6 @@ module.exports = {
   getStudentAttendanceSheet,
   getAttendanceByDay,
   updateAttendanceByDay,
+  copyAttendancePeriod,
   deleteAttendanceByDay,
 };

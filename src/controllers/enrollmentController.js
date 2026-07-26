@@ -8,6 +8,9 @@ const Course = require("../models/Course");
 const Mark = require("../models/Mark"); // ✅ NEW (needed to delete marks)
 const ObeStudentMark = require("../models/ObeStudentMark");
 const AttendanceSummary = require("../models/AttendanceSummary");
+const Attendance = require("../models/Attendance");
+const LabSubmission = require("../models/LabSubmission");
+const NotebookNote = require("../models/NotebookNote");
 const { sendMail } = require("../utils/mailer");
 
 // ---------------------------------------------
@@ -24,9 +27,12 @@ const generateRandomPassword = (length = 8) => {
 };
 
 // small helper: normalize email (avoid null/empty string duplicates)
+// Bulk-pasted tables often contain a third column such as "Regular".
+// Treat a value as an email only when it actually looks like one.
 const normalizeEmail = (email) => {
-  const e = (email || "").trim();
-  return e ? e : undefined; // ✅ IMPORTANT: never return null
+  const e = String(email || "").trim().toLowerCase();
+  if (!e) return undefined;
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e) ? e : undefined;
 };
 
 // ✅ helper: ensure teacher owns the course
@@ -47,10 +53,10 @@ exports.addStudentToCourse = async (req, res) => {
       return res.status(400).json({ message: "Roll and Name are required." });
     }
 
-    // Ensure course exists
-    const course = await Course.findById(courseId);
+    // Ensure this teacher owns the target course
+    const course = await getTeacherCourseOr404(courseId, req.user?.userId);
     if (!course) {
-      return res.status(404).json({ message: "Course not found." });
+      return res.status(404).json({ message: "Course not found (or not yours)." });
     }
 
     const emailValue = normalizeEmail(email);
@@ -140,17 +146,19 @@ exports.bulkAddStudentsToCourse = async (req, res) => {
       return res.status(400).json({ message: "Students array is required." });
     }
 
-    const course = await Course.findById(courseId);
+    const course = await getTeacherCourseOr404(courseId, req.user?.userId);
     if (!course) {
-      return res.status(404).json({ message: "Course not found." });
+      return res.status(404).json({ message: "Course not found (or not yours)." });
     }
 
     const results = [];
 
+    const seenRolls = new Set();
+
     for (const row of students) {
-      const roll = (row.roll || "").trim();
-      const name = (row.name || "").trim();
-      const emailValue = normalizeEmail(row.email);
+      const roll = String(row?.roll || "").replace(/\u200B/g, "").trim();
+      const name = String(row?.name || "").replace(/\s+/g, " ").trim();
+      const emailValue = normalizeEmail(row?.email);
 
       if (!roll || !name) {
         results.push({
@@ -163,67 +171,94 @@ exports.bulkAddStudentsToCourse = async (req, res) => {
         continue;
       }
 
-      let temporaryPassword = null;
-      let note = "";
-
-      // Find or create account
-      let student = await User.findOne({ username: roll, role: "student" });
-
-      if (!student) {
-        const password = generateRandomPassword();
-        temporaryPassword = password;
-
-        const userData = {
-          username: roll,
+      if (seenRolls.has(roll)) {
+        results.push({
+          roll,
           name,
-          role: "student",
-        };
-        if (emailValue) userData.email = emailValue;
+          email: emailValue || null,
+          status: "skipped",
+          note: "Duplicate roll in pasted list",
+        });
+        continue;
+      }
+      seenRolls.add(roll);
 
-        student = new User(userData);
+      try {
+        let temporaryPassword = null;
+        let note = "";
 
-        if (typeof student.setPassword === "function") {
-          await student.setPassword(password);
+        // Find or create account by student roll.
+        let student = await User.findOne({ username: roll, role: "student" });
+
+        if (!student) {
+          const password = generateRandomPassword();
+          temporaryPassword = password;
+
+          const userData = {
+            username: roll,
+            name,
+            role: "student",
+          };
+          if (emailValue) userData.email = emailValue;
+
+          student = new User(userData);
+
+          if (typeof student.setPassword === "function") {
+            await student.setPassword(password);
+          } else {
+            student.password = password;
+          }
+
+          await student.save();
+          note = "New student created & enrolled";
         } else {
-          student.password = password;
+          note =
+            student.name && student.name.trim() !== name
+              ? `Existing student enrolled (saved name: ${student.name})`
+              : "Existing student enrolled";
         }
 
-        await student.save();
-        note = "New student created & enrolled";
-      } else {
-        note = "Existing student enrolled";
-      }
-
-      // Check if already enrolled
-      let enrollment = await Enrollment.findOne({
-        course: courseId,
-        student: student._id,
-      });
-
-      if (!enrollment) {
-        enrollment = await Enrollment.create({
+        let enrollment = await Enrollment.findOne({
           course: courseId,
           student: student._id,
-          temporaryPassword: temporaryPassword || undefined,
         });
-      } else {
-        // If newly created now, store its temp password
-        if (temporaryPassword) {
-          enrollment.temporaryPassword = temporaryPassword;
-          await enrollment.save();
-        }
-      }
 
-      results.push({
-        roll,
-        name,
-        email: student.email || null,
-        status: temporaryPassword ? "created" : "existing",
-        enrollmentId: enrollment._id,
-        studentId: student._id,
-        temporaryPassword,
-        note,
-      });
+        const wasAlreadyEnrolled = Boolean(enrollment);
+        if (!enrollment) {
+          enrollment = await Enrollment.create({
+            course: courseId,
+            student: student._id,
+            temporaryPassword: temporaryPassword || undefined,
+          });
+        }
+
+        results.push({
+          roll,
+          name: student.name || name,
+          email: student.email || null,
+          status: temporaryPassword
+            ? "created"
+            : wasAlreadyEnrolled
+              ? "already_enrolled"
+              : "existing",
+          enrollmentId: enrollment._id,
+          studentId: student._id,
+          temporaryPassword,
+          note: wasAlreadyEnrolled ? "Already enrolled in this course" : note,
+        });
+      } catch (rowError) {
+        console.error(`Bulk Add Row Error (${roll}):`, rowError);
+        results.push({
+          roll,
+          name,
+          email: emailValue || null,
+          status: "error",
+          note:
+            rowError?.code === 11000
+              ? "A student account already uses the same username or email"
+              : "Could not add this row",
+        });
+      }
     }
 
     return res.json({ results });
@@ -234,11 +269,113 @@ exports.bulkAddStudentsToCourse = async (req, res) => {
 };
 
 // ===============================================================
+// 2B️⃣ COPY STUDENTS FROM ANOTHER COURSE
+// Enrolls the same student accounts only. Marks, attendance, OBE
+// data and temporary passwords are intentionally NOT copied.
+// ===============================================================
+exports.copyStudentsFromCourse = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const { sourceCourseId } = req.body || {};
+    const teacherId = req.user?.userId;
+
+    if (!sourceCourseId) {
+      return res.status(400).json({ message: "Source course is required." });
+    }
+
+    if (String(sourceCourseId) === String(courseId)) {
+      return res.status(400).json({ message: "Source and target course cannot be the same." });
+    }
+
+    const [targetCourse, sourceCourse] = await Promise.all([
+      getTeacherCourseOr404(courseId, teacherId),
+      getTeacherCourseOr404(sourceCourseId, teacherId),
+    ]);
+
+    if (!targetCourse) {
+      return res.status(404).json({ message: "Target course not found (or not yours)." });
+    }
+    if (!sourceCourse) {
+      return res.status(404).json({ message: "Source course not found (or not yours)." });
+    }
+
+    const sourceEnrollments = await Enrollment.find({ course: sourceCourseId })
+      .select("student")
+      .lean();
+
+    const studentIds = sourceEnrollments
+      .map((item) => item.student)
+      .filter(Boolean);
+
+    if (!studentIds.length) {
+      return res.json({
+        message: "The selected source course has no students.",
+        sourceCount: 0,
+        copiedCount: 0,
+        alreadyEnrolledCount: 0,
+      });
+    }
+
+    const existing = await Enrollment.find({
+      course: courseId,
+      student: { $in: studentIds },
+    })
+      .select("student")
+      .lean();
+
+    const existingIds = new Set(existing.map((item) => String(item.student)));
+    const missingIds = studentIds.filter((id) => !existingIds.has(String(id)));
+
+    if (missingIds.length) {
+      await Enrollment.bulkWrite(
+        missingIds.map((studentId) => ({
+          updateOne: {
+            filter: { course: courseId, student: studentId },
+            update: {
+              $setOnInsert: {
+                course: courseId,
+                student: studentId,
+              },
+            },
+            upsert: true,
+          },
+        })),
+        { ordered: false }
+      );
+    }
+
+    return res.json({
+      message: "Students copied successfully.",
+      sourceCount: studentIds.length,
+      copiedCount: missingIds.length,
+      alreadyEnrolledCount: studentIds.length - missingIds.length,
+      sourceCourse: {
+        id: sourceCourse._id,
+        code: sourceCourse.code,
+        section: sourceCourse.section,
+        semester: sourceCourse.semester,
+        year: sourceCourse.year,
+      },
+    });
+  } catch (err) {
+    console.error("Copy Students From Course Error:", err);
+    return res.status(500).json({
+      message: "Failed to copy students from the selected course.",
+    });
+  }
+};
+
+// ===============================================================
 // 3️⃣ GET STUDENTS
 // ===============================================================
 exports.getCourseStudents = async (req, res) => {
   try {
     const { courseId } = req.params;
+
+    const course = await getTeacherCourseOr404(courseId, req.user?.userId);
+    if (!course) {
+      return res.status(404).json({ message: "Course not found (or not yours)." });
+    }
 
     const enrollments = await Enrollment.find({ course: courseId }).populate("student");
 
@@ -255,6 +392,124 @@ exports.getCourseStudents = async (req, res) => {
   } catch (err) {
     console.error("Get Students Error:", err);
     return res.status(500).json({ message: "Failed to load course students." });
+  }
+};
+
+// ===============================================================
+// 3B️⃣ UPDATE STUDENT ACCOUNT DETAILS
+// Changing the roll changes the student's login username globally. Because a few
+// older modules store a roll snapshot, those snapshots are kept in sync too.
+// ===============================================================
+exports.updateCourseStudent = async (req, res) => {
+  try {
+    const { courseId, studentId } = req.params;
+    const teacherId = req.user?.userId;
+    const roll = String(req.body?.roll || "").replace(/\u200B/g, "").trim();
+    const name = String(req.body?.name || "").replace(/\s+/g, " ").trim();
+    const emailValue = normalizeEmail(req.body?.email);
+
+    if (!roll || !name) {
+      return res.status(400).json({ message: "Roll and name are required." });
+    }
+
+    if (!/^\d{6,20}$/.test(roll)) {
+      return res.status(400).json({ message: "Student roll must contain 6 to 20 digits." });
+    }
+
+    const course = await getTeacherCourseOr404(courseId, teacherId);
+    if (!course) {
+      return res.status(404).json({ message: "Course not found (or not yours)." });
+    }
+
+    const enrollment = await Enrollment.findOne({
+      course: courseId,
+      student: studentId,
+    }).populate("student");
+
+    if (!enrollment?.student || enrollment.student.role !== "student") {
+      return res.status(404).json({ message: "Student is not enrolled in this course." });
+    }
+
+    const student = enrollment.student;
+    const oldRoll = String(student.username || "").trim();
+
+    const rollOwner = await User.findOne({
+      username: roll,
+      _id: { $ne: student._id },
+    }).select("_id");
+    if (rollOwner) {
+      return res.status(409).json({ message: "Another account already uses this roll number." });
+    }
+
+    if (emailValue) {
+      const emailOwner = await User.findOne({
+        email: emailValue,
+        _id: { $ne: student._id },
+      }).select("_id");
+      if (emailOwner) {
+        return res.status(409).json({ message: "Another account already uses this email address." });
+      }
+    }
+
+    student.username = roll;
+    student.name = name;
+    student.email = emailValue || undefined;
+    await student.save();
+
+    // Keep denormalized roll/name snapshots consistent with the account.
+    const studentEnrollments = await Enrollment.find({ student: student._id })
+      .select("course")
+      .lean();
+    const enrolledCourseIds = studentEnrollments.map((item) => item.course).filter(Boolean);
+
+    const syncJobs = [];
+    if (oldRoll && oldRoll !== roll && enrolledCourseIds.length) {
+      syncJobs.push(
+        Attendance.updateMany(
+          { course: { $in: enrolledCourseIds }, "records.roll": oldRoll },
+          { $set: { "records.$[row].roll": roll } },
+          { arrayFilters: [{ "row.roll": oldRoll }] }
+        )
+      );
+      syncJobs.push(
+        LabSubmission.updateMany(
+          { student: student._id },
+          { $set: { roll } }
+        )
+      );
+    }
+
+    syncJobs.push(
+      NotebookNote.updateMany(
+        { "evaluationRows.student": student._id },
+        {
+          $set: {
+            "evaluationRows.$[row].roll": roll,
+            "evaluationRows.$[row].name": name,
+          },
+        },
+        { arrayFilters: [{ "row.student": student._id }] }
+      )
+    );
+
+    await Promise.all(syncJobs);
+
+    return res.json({
+      message: "Student details updated successfully.",
+      student: {
+        id: student._id,
+        roll: student.username,
+        name: student.name,
+        email: student.email || null,
+      },
+      loginChanged: oldRoll !== roll,
+    });
+  } catch (err) {
+    console.error("Update Student Error:", err);
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "The roll number or email is already in use." });
+    }
+    return res.status(500).json({ message: "Failed to update student details." });
   }
 };
 

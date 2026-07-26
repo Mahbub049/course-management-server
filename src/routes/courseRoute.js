@@ -15,7 +15,9 @@ const {
 const {
   addStudentToCourse,
   bulkAddStudentsToCourse,
+  copyStudentsFromCourse,
   getCourseStudents,
+  updateCourseStudent,
   removeStudentFromCourse,
   removeAllStudentsFromCourse,
   resetStudentPassword,
@@ -139,7 +141,9 @@ router.put("/:id", ...teacherOnly, updateCourse);
 // ===================================================
 router.post("/:courseId/students", ...teacherOnly, addStudentToCourse);
 router.post("/:courseId/students/bulk", ...teacherOnly, bulkAddStudentsToCourse);
+router.post("/:courseId/students/copy-from-course", ...teacherOnly, copyStudentsFromCourse);
 router.get("/:courseId/students", ...teacherOnly, getCourseStudents);
+router.patch("/:courseId/students/:studentId", ...teacherOnly, updateCourseStudent);
 
 // ✅ NEW: remove all students in a course (must be above /:enrollmentId route?)
 // This is safe because /students/:enrollmentId has extra segment.
