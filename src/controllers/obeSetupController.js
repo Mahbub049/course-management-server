@@ -50,19 +50,24 @@ const normalizeAttainmentLevels = (levels = []) => {
 };
 
 const normalizeMappings = (rows = []) => {
-  return (Array.isArray(rows) ? rows : [])
+  const unique = new Map();
+
+  (Array.isArray(rows) ? rows : [])
     .map((row) => ({
       coCode: cleanCode(row?.coCode),
       targetType: cleanCode(row?.targetType) === 'PSO' ? 'PSO' : 'PO',
       targetCode: cleanCode(row?.targetCode),
-      strength: Number(row?.strength),
+      strength: [1, 2, 3].includes(Number(row?.strength)) ? Number(row.strength) : 1,
     }))
-    .filter(
-      (row) =>
-        row.coCode &&
-        row.targetCode &&
-        [1, 2, 3].includes(row.strength)
-    );
+    .filter((row) => row.coCode && row.targetCode)
+    .forEach((row) => {
+      // One CO is intentionally allowed to map to many different POs. Only
+      // exact duplicate CO -> target rows are collapsed.
+      const key = `${row.coCode}__${row.targetType}__${row.targetCode}`;
+      if (!unique.has(key)) unique.set(key, row);
+    });
+
+  return [...unique.values()];
 };
 
 const getObeSetup = async (req, res) => {
