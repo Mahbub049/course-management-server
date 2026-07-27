@@ -647,6 +647,10 @@ const saveMarksForCourse = async (req, res) => {
 const syncMarksFromObe = async (req, res) => {
   try {
     const { courseId } = req.params;
+    const requestedMappings = Array.isArray(req.body?.mappings)
+      ? req.body.mappings
+      : [];
+    const overwriteExisting = req.body?.overwriteExisting !== false;
 
     const course = await findTeacherCourse(courseId, req.user.userId);
     if (!course) {
@@ -687,16 +691,109 @@ const syncMarksFromObe = async (req, res) => {
       });
     }
 
-    const { matches, skipped } = buildObeAssessmentMatches(
-      blueprints,
-      assessments,
-      { allowStructuredLab: courseType === "lab" }
-    );
+    let matches = [];
+    let skipped = [];
+
+    if (requestedMappings.length) {
+      const blueprintById = new Map(
+        blueprints.map((blueprint) => [String(blueprint._id), blueprint])
+      );
+      const assessmentById = new Map(
+        assessments.map((assessment) => [String(assessment._id), assessment])
+      );
+      const usedAssessmentIds = new Set();
+      const seenBlueprintIds = new Set();
+
+      for (const mapping of requestedMappings) {
+        const blueprintId = String(mapping?.blueprintId || "");
+        const assessmentId = String(mapping?.assessmentId || "");
+        if (!blueprintId || !assessmentId) continue;
+
+        if (seenBlueprintIds.has(blueprintId)) {
+          return res.status(400).json({
+            message: "The same OBE assessment cannot be mapped more than once.",
+          });
+        }
+        if (usedAssessmentIds.has(assessmentId)) {
+          return res.status(400).json({
+            message:
+              "The same marksheet assessment cannot receive more than one OBE assessment in the same fetch.",
+          });
+        }
+
+        const blueprint = blueprintById.get(blueprintId);
+        const assessment = assessmentById.get(assessmentId);
+        if (!blueprint || !assessment) {
+          return res.status(400).json({
+            message:
+              "One selected OBE/marksheet mapping is no longer available. Refresh the page and try again.",
+          });
+        }
+
+        if (!sameMarks(assessment.fullMarks, blueprint.totalMarks)) {
+          return res.status(400).json({
+            message: `${blueprint.assessmentName} has ${Number(
+              blueprint.totalMarks || 0
+            )} marks in OBE, but ${assessment.name} has ${Number(
+              assessment.fullMarks || 0
+            )} marks in the marksheet.`,
+          });
+        }
+
+        let structuredItemMapping = [];
+        if (assessment?.structureType === "lab_final") {
+          if (courseType !== "lab") {
+            return res.status(400).json({
+              message:
+                "Structured lab assessment mapping is only available for lab courses.",
+            });
+          }
+          const structured = buildStructuredObeItemMapping(
+            blueprint,
+            assessment
+          );
+          if (!structured.valid) {
+            return res.status(400).json({
+              message: `${blueprint.assessmentName}: ${structured.reason}`,
+            });
+          }
+          structuredItemMapping = structured.items;
+        }
+
+        matches.push({
+          blueprint,
+          assessment,
+          matchMethod: "teacher_selected",
+          structuredItemMapping,
+        });
+        seenBlueprintIds.add(blueprintId);
+        usedAssessmentIds.add(assessmentId);
+      }
+
+      const selectedBlueprintIds = new Set(
+        matches.map((match) => String(match.blueprint._id))
+      );
+      skipped = blueprints
+        .filter((blueprint) => !selectedBlueprintIds.has(String(blueprint._id)))
+        .map((blueprint) => ({
+          blueprintId: String(blueprint._id),
+          blueprintName: blueprint.assessmentName,
+          blueprintType: blueprint.assessmentType,
+          totalMarks: Number(blueprint.totalMarks || 0),
+          reason: "Skipped by teacher during OBE fetch mapping.",
+        }));
+    } else {
+      const auto = buildObeAssessmentMatches(blueprints, assessments, {
+        allowStructuredLab: courseType === "lab",
+      });
+      matches = auto.matches;
+      skipped = auto.skipped;
+    }
 
     if (!matches.length) {
       return res.status(400).json({
         message:
-          "No OBE assessment could be matched with a marksheet field. Assessment name/type and full marks must correspond.",
+          "No OBE assessment could be matched with a marksheet field. Review the mapping or create the required marksheet assessment first.",
         importedRecords: 0,
         matchedAssessments: [],
         skippedBlueprints: skipped,
@@ -707,13 +804,28 @@ const syncMarksFromObe = async (req, res) => {
       enrollments.map((row) => String(row.student))
     );
     const blueprintIds = matches.map(({ blueprint }) => blueprint._id);
+    const assessmentIds = matches.map(({ assessment }) => assessment._id);
 
-    const obeMarks = await ObeStudentMark.find({
-      course: courseId,
-      blueprint: { $in: blueprintIds },
-      student: { $in: [...enrolledStudentIds] },
-    }).select("student blueprint totalMarks entries");
+    const [obeMarks, existingMarks] = await Promise.all([
+      ObeStudentMark.find({
+        course: courseId,
+        blueprint: { $in: blueprintIds },
+        student: { $in: [...enrolledStudentIds] },
+      }).select("student blueprint totalMarks entries"),
+      overwriteExisting
+        ? Promise.resolve([])
+        : Mark.find({
+            course: courseId,
+            assessment: { $in: assessmentIds },
+            student: { $in: [...enrolledStudentIds] },
+          }).select("student assessment"),
+    ]);
 
+    const existingKeySet = new Set(
+      existingMarks.map(
+        (row) => `${String(row.student)}__${String(row.assessment)}`
+      )
+    );
     const matchByBlueprintId = new Map(
       matches.map((match) => [String(match.blueprint._id), match])
     );
@@ -722,6 +834,7 @@ const syncMarksFromObe = async (req, res) => {
     );
 
     const bulkOps = [];
+    let protectedExistingRecords = 0;
 
     for (const obeMark of obeMarks) {
       const studentId = String(obeMark.student);
@@ -729,6 +842,12 @@ const syncMarksFromObe = async (req, res) => {
 
       const match = matchByBlueprintId.get(String(obeMark.blueprint));
       if (!match) continue;
+
+      const existingKey = `${studentId}__${String(match.assessment._id)}`;
+      if (!overwriteExisting && existingKeySet.has(existingKey)) {
+        protectedExistingRecords += 1;
+        continue;
+      }
 
       const assessmentFullMarks = Number(match.assessment.fullMarks || 0);
       let subMarks = [];
@@ -814,15 +933,25 @@ const syncMarksFromObe = async (req, res) => {
         blueprintName: row.blueprintName,
         blueprintType: getAssessmentCategory(row.blueprintName),
         totalMarks: row.fullMarks,
-        reason: "The assessment matched, but no saved OBE student marks were found.",
+        reason: overwriteExisting
+          ? "The assessment matched, but no saved OBE student marks were found."
+          : "No new value was imported for this assessment. Existing marks may have been protected or OBE marks may not have been saved yet.",
       }));
 
     return res.json({
       message:
         bulkOps.length > 0
-          ? `${bulkOps.length} student assessment total(s) were fetched from OBE/CO-PO. Existing values in matched marksheet fields were replaced.`
-          : "Assessment fields matched, but there were no saved OBE student marks to import.",
+          ? `${bulkOps.length} student assessment total(s) were fetched from OBE/CO-PO.${
+              overwriteExisting
+                ? " Existing values in the selected marksheet fields were replaced where OBE marks were available."
+                : " Existing marks were kept and only empty assessment records were filled."
+            }`
+          : protectedExistingRecords > 0
+            ? "All matching marksheet records already contained marks, so nothing was replaced."
+            : "Assessment fields matched, but there were no saved OBE student marks to import.",
       importedRecords: bulkOps.length,
+      protectedExistingRecords,
+      overwriteExisting,
       matchedAssessments,
       skippedBlueprints: [...skipped, ...matchedWithoutSavedMarks],
     });
