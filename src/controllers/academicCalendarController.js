@@ -32,22 +32,12 @@ function detectCategory(text = "") {
 
 function safeCategory(category, title = "") {
   const value = String(category || "").trim();
-
-  if (ALLOWED_EVENT_CATEGORIES.includes(value)) {
-    return value;
-  }
-
-  return detectCategory(title);
+  return ALLOWED_EVENT_CATEGORIES.includes(value) ? value : detectCategory(title);
 }
 
 function safeSummaryType(type) {
   const value = String(type || "").trim();
-
-  if (ALLOWED_SUMMARY_TYPES.includes(value)) {
-    return value;
-  }
-
-  return "Other";
+  return ALLOWED_SUMMARY_TYPES.includes(value) ? value : "Other";
 }
 
 exports.getLatestAcademicCalendar = async (req, res) => {
@@ -56,13 +46,9 @@ exports.getLatestAcademicCalendar = async (req, res) => {
       updatedAt: -1,
     });
 
-    return res.json({
-      success: true,
-      calendar,
-    });
+    return res.json({ success: true, calendar });
   } catch (error) {
     console.error("Get academic calendar error:", error);
-
     return res.status(500).json({
       success: false,
       message: "Failed to load academic calendar.",
@@ -149,7 +135,6 @@ exports.saveAcademicCalendar = async (req, res) => {
     });
   } catch (error) {
     console.error("Save academic calendar error:", error);
-
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to save academic calendar.",
@@ -161,14 +146,9 @@ exports.saveAcademicCalendar = async (req, res) => {
 exports.detectAcademicCalendarCategory = async (req, res) => {
   try {
     const { title = "" } = req.body;
-
-    return res.json({
-      success: true,
-      category: detectCategory(title),
-    });
+    return res.json({ success: true, category: detectCategory(title) });
   } catch (error) {
     console.error("Detect academic calendar category error:", error);
-
     return res.status(500).json({
       success: false,
       message: "Failed to detect category.",
@@ -177,106 +157,128 @@ exports.detectAcademicCalendarCategory = async (req, res) => {
   }
 };
 
-const ALLOWED_FACULTY_EVENT_TYPES = [
-  "Class",
-  "Exam",
-  "Meeting",
-  "Task",
-  "Reminder",
-  "Deadline",
-  "Payment",
-  "Registration",
-  "Holiday",
-  "Event",
-  "Other",
-];
-
-const ALLOWED_PRIORITIES = ["Low", "Normal", "High"];
+const CURRENT_FACULTY_EVENT_TYPES = ["Task", "Exam", "Event"];
+const ALLOWED_VISIBILITY = ["personal", "university"];
+const TIME_PATTERN = /^$|^([01]\d|2[0-3]):[0-5]\d$/;
 
 function safeFacultyEventType(type) {
   const value = String(type || "").trim();
-  return ALLOWED_FACULTY_EVENT_TYPES.includes(value) ? value : "Task";
+  if (CURRENT_FACULTY_EVENT_TYPES.includes(value)) return value;
+
+  if (["Class", "Meeting", "Holiday"].includes(value)) return "Event";
+  return "Task";
 }
 
-function safePriority(priority) {
-  const value = String(priority || "").trim();
-  return ALLOWED_PRIORITIES.includes(value) ? value : "Normal";
+function safeVisibility(value) {
+  const visibility = String(value || "").trim();
+  return ALLOWED_VISIBILITY.includes(visibility) ? visibility : "personal";
 }
 
 function parseDateOnly(value) {
   const text = String(value || "").trim();
-
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-    return null;
-  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) return null;
 
   const date = new Date(`${text}T00:00:00.000Z`);
-
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-
-  return date;
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function endOfDateOnly(value) {
   const date = parseDateOnly(value);
-
   if (!date) return null;
-
   date.setUTCHours(23, 59, 59, 999);
   return date;
 }
 
+function cleanTime(value) {
+  const time = String(value || "").trim();
+  return TIME_PATTERN.test(time) ? time : "";
+}
+
 function cleanFacultyEventPayload(body = {}) {
-  const title = String(body.title || "").trim();
   const date = parseDateOnly(body.date);
+  const endDate = parseDateOnly(body.endDate) || date;
 
   return {
-    title,
+    title: String(body.title || "").trim(),
     type: safeFacultyEventType(body.type),
     date,
-    startTime: String(body.startTime || "").trim(),
-    endTime: String(body.endTime || "").trim(),
+    endDate,
+    startTime: cleanTime(body.startTime),
+    endTime: cleanTime(body.endTime),
     details: String(body.details || "").trim(),
-    priority: safePriority(body.priority),
-    completed: Boolean(body.completed),
+    visibility: safeVisibility(body.visibility),
+    priority: "Normal",
+    completed: false,
+  };
+}
+
+function validateFacultyEventPayload(payload) {
+  if (!payload.title) return "Event title is required.";
+  if (!payload.date || !payload.endDate) return "A valid start and end date are required.";
+  if (payload.endDate < payload.date) return "The end date cannot be before the start date.";
+  if (
+    payload.date.getTime() === payload.endDate.getTime() &&
+    payload.startTime &&
+    payload.endTime &&
+    payload.endTime < payload.startTime
+  ) {
+    return "The end time cannot be before the start time.";
+  }
+  return "";
+}
+
+function eventResponse(event, userId) {
+  const plain = typeof event.toObject === "function" ? event.toObject() : event;
+  const facultyId = plain.faculty?._id || plain.faculty;
+
+  return {
+    ...plain,
+    creatorName: plain.faculty?.name || "",
+    creatorShortCode: plain.faculty?.shortCode || "",
+    canEdit: String(facultyId) === String(userId),
   };
 }
 
 exports.getFacultyCalendarEvents = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-
-    const query = {
-      faculty: req.user.userId,
-    };
-
     const start = parseDateOnly(startDate);
     const end = endOfDateOnly(endDate);
 
-    if (start || end) {
-      query.date = {};
-      if (start) query.date.$gte = start;
-      if (end) query.date.$lte = end;
+    const filters = [
+      {
+        $or: [
+          { faculty: req.user.userId },
+          { visibility: "university" },
+        ],
+      },
+    ];
+
+    // Return items that overlap the requested date range, including multi-day events.
+    if (end) filters.push({ date: { $lte: end } });
+    if (start) {
+      filters.push({
+        $or: [
+          { endDate: { $gte: start } },
+          { endDate: null, date: { $gte: start } },
+          { endDate: { $exists: false }, date: { $gte: start } },
+        ],
+      });
     }
 
-    const events = await FacultyCalendarEvent.find(query).sort({
-      date: 1,
-      startTime: 1,
-      createdAt: 1,
-    });
+    const events = await FacultyCalendarEvent.find({ $and: filters })
+      .populate("faculty", "name shortCode")
+      .sort({ date: 1, startTime: 1, createdAt: 1 });
 
     return res.json({
       success: true,
-      events,
+      events: events.map((event) => eventResponse(event, req.user.userId)),
     });
   } catch (error) {
     console.error("Get faculty calendar events error:", error);
-
     return res.status(500).json({
       success: false,
-      message: "Failed to load your calendar events.",
+      message: "Failed to load calendar events.",
       error: error.message,
     });
   }
@@ -285,34 +287,32 @@ exports.getFacultyCalendarEvents = async (req, res) => {
 exports.createFacultyCalendarEvent = async (req, res) => {
   try {
     const payload = cleanFacultyEventPayload(req.body);
+    const validationMessage = validateFacultyEventPayload(payload);
 
-    if (!payload.title) {
-      return res.status(400).json({
-        success: false,
-        message: "Event title is required.",
-      });
+    if (validationMessage) {
+      return res.status(400).json({ success: false, message: validationMessage });
     }
 
-    if (!payload.date) {
-      return res.status(400).json({
-        success: false,
-        message: "A valid event date is required.",
-      });
-    }
-
-    const event = await FacultyCalendarEvent.create({
+    const created = await FacultyCalendarEvent.create({
       ...payload,
       faculty: req.user.userId,
     });
 
+    const event = await FacultyCalendarEvent.findById(created._id).populate(
+      "faculty",
+      "name shortCode"
+    );
+
     return res.status(201).json({
       success: true,
-      message: "Calendar item created successfully.",
-      event,
+      message:
+        payload.visibility === "university"
+          ? "University calendar item created successfully."
+          : "Calendar item created successfully.",
+      event: eventResponse(event, req.user.userId),
     });
   } catch (error) {
     console.error("Create faculty calendar event error:", error);
-
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to create calendar item.",
@@ -324,48 +324,35 @@ exports.createFacultyCalendarEvent = async (req, res) => {
 exports.updateFacultyCalendarEvent = async (req, res) => {
   try {
     const payload = cleanFacultyEventPayload(req.body);
+    const validationMessage = validateFacultyEventPayload(payload);
 
-    if (!payload.title) {
-      return res.status(400).json({
-        success: false,
-        message: "Event title is required.",
-      });
+    if (validationMessage) {
+      return res.status(400).json({ success: false, message: validationMessage });
     }
 
-    if (!payload.date) {
-      return res.status(400).json({
-        success: false,
-        message: "A valid event date is required.",
-      });
-    }
-
-    const event = await FacultyCalendarEvent.findOneAndUpdate(
+    const updated = await FacultyCalendarEvent.findOneAndUpdate(
       {
         _id: req.params.eventId,
         faculty: req.user.userId,
       },
       payload,
-      {
-        new: true,
-        runValidators: true,
-      }
-    );
+      { new: true, runValidators: true }
+    ).populate("faculty", "name shortCode");
 
-    if (!event) {
+    if (!updated) {
       return res.status(404).json({
         success: false,
-        message: "Calendar item not found.",
+        message: "Calendar item not found or you do not have permission to edit it.",
       });
     }
 
     return res.json({
       success: true,
       message: "Calendar item updated successfully.",
-      event,
+      event: eventResponse(updated, req.user.userId),
     });
   } catch (error) {
     console.error("Update faculty calendar event error:", error);
-
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to update calendar item.",
@@ -384,7 +371,7 @@ exports.deleteFacultyCalendarEvent = async (req, res) => {
     if (!event) {
       return res.status(404).json({
         success: false,
-        message: "Calendar item not found.",
+        message: "Calendar item not found or you do not have permission to delete it.",
       });
     }
 
@@ -394,7 +381,6 @@ exports.deleteFacultyCalendarEvent = async (req, res) => {
     });
   } catch (error) {
     console.error("Delete faculty calendar event error:", error);
-
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to delete calendar item.",

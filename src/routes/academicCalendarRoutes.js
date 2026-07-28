@@ -17,7 +17,7 @@ const {
 } = require("../middleware/authMiddleware");
 
 
-// Personal faculty calendar events/tasks. These are private to each logged-in teacher.
+// Teacher calendar items. Personal items are private; university items are shared with all teachers.
 router.get(
   "/faculty-events",
   authMiddleware,
