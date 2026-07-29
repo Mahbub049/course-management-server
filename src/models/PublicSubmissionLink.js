@@ -42,6 +42,22 @@ const publicSubmissionLinkSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Marks this course as the single page opened by the shared /submit address.
+    // The controller keeps this exclusive; course-specific token links remain separate.
+    showOnPortal: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    // Optional schedule for automatically showing/hiding the course on /submit.
+    portalVisibleFrom: {
+      type: Date,
+      default: null,
+    },
+    portalVisibleUntil: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true }
 );

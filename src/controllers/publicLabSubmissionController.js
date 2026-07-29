@@ -187,10 +187,32 @@ function normalizeLink(link) {
     title: link.title || 'Public Submission Link',
     instructions: link.instructions || '',
     isActive: !!link.isActive,
+    showOnPortal: link.showOnPortal !== false,
+    portalVisibleFrom: link.portalVisibleFrom || null,
+    portalVisibleUntil: link.portalVisibleUntil || null,
     assessmentIds: (link.assessmentIds || []).map((id) => id.toString()),
     createdAt: link.createdAt,
     updatedAt: link.updatedAt,
   };
+}
+
+function parseOptionalDate(value) {
+  if (value === undefined) return undefined;
+  if (value === null || String(value).trim() === '') return null;
+
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date;
+}
+
+function isPortalListingVisible(link, now = new Date()) {
+  if (!link?.isActive || link.showOnPortal === false) return false;
+
+  const from = getValidDate(link.portalVisibleFrom);
+  const until = getValidDate(link.portalVisibleUntil);
+
+  if (from && now < from) return false;
+  if (until && now > until) return false;
+  return true;
 }
 
 function normalizeSlugPart(value = '') {
@@ -261,6 +283,9 @@ async function getOrCreateCourseLink(course, teacherId) {
       instructions: '',
       assessmentIds: [],
       isActive: false,
+      showOnPortal: false,
+      portalVisibleFrom: null,
+      portalVisibleUntil: null,
     });
 
     return link;
@@ -393,6 +418,9 @@ const updateTeacherPublicSubmissionLink = async (req, res) => {
     const { courseId } = req.params;
     const {
       isActive,
+      showOnPortal,
+      portalVisibleFrom,
+      portalVisibleUntil,
       assessmentIds = [],
       title,
       instructions,
@@ -425,8 +453,45 @@ const updateTeacherPublicSubmissionLink = async (req, res) => {
 
     link.assessmentIds = validAssessments.map((item) => item._id);
 
-    if (isActive !== undefined) {
-      link.isActive = !!isActive;
+    const requestedActive =
+      isActive !== undefined ? !!isActive : !!link.isActive;
+    const requestedAsMainSubmitPage =
+      showOnPortal !== undefined ? !!showOnPortal : link.showOnPortal === true;
+
+    // The shared /submit address can point to only one course at a time.
+    // Choosing this course as the main page also enables its public link.
+    link.showOnPortal = requestedAsMainSubmitPage;
+    link.isActive = requestedAsMainSubmitPage ? true : requestedActive;
+
+    if (!link.isActive) {
+      link.showOnPortal = false;
+    }
+
+    const parsedVisibleFrom = parseOptionalDate(portalVisibleFrom);
+    const parsedVisibleUntil = parseOptionalDate(portalVisibleUntil);
+
+    if (portalVisibleFrom !== undefined && parsedVisibleFrom === undefined) {
+      return res.status(400).json({ message: 'The portal start date/time is invalid.' });
+    }
+
+    if (portalVisibleUntil !== undefined && parsedVisibleUntil === undefined) {
+      return res.status(400).json({ message: 'The portal end date/time is invalid.' });
+    }
+
+    if (parsedVisibleFrom !== undefined) {
+      link.portalVisibleFrom = parsedVisibleFrom;
+    }
+
+    if (parsedVisibleUntil !== undefined) {
+      link.portalVisibleUntil = parsedVisibleUntil;
+    }
+
+    const effectiveFrom = getValidDate(link.portalVisibleFrom);
+    const effectiveUntil = getValidDate(link.portalVisibleUntil);
+    if (effectiveFrom && effectiveUntil && effectiveFrom > effectiveUntil) {
+      return res.status(400).json({
+        message: 'The portal end date/time must be later than the start date/time.',
+      });
     }
 
     if (title !== undefined) {
@@ -435,6 +500,15 @@ const updateTeacherPublicSubmissionLink = async (req, res) => {
 
     if (instructions !== undefined) {
       link.instructions = String(instructions || '').trim();
+    }
+
+    if (link.showOnPortal) {
+      // Make the shared /submit destination exclusive while preserving every
+      // course-specific token link and its public-upload enabled state.
+      await PublicSubmissionLink.updateMany(
+        { _id: { $ne: link._id }, showOnPortal: { $ne: false } },
+        { $set: { showOnPortal: false } }
+      );
     }
 
     await link.save();
@@ -450,6 +524,118 @@ const updateTeacherPublicSubmissionLink = async (req, res) => {
 };
 
 // ---------------- PUBLIC STUDENT ACCESS ----------------
+
+const getPublicSubmissionPortal = async (_req, res) => {
+  try {
+    const now = new Date();
+    const links = await PublicSubmissionLink.find({
+      isActive: true,
+      showOnPortal: { $ne: false },
+    })
+      .populate('course')
+      .populate('teacher', 'name department designation')
+      .sort({ updatedAt: -1 });
+
+    const portalRows = await Promise.all(
+      links.map(async (link) => {
+        if (!link.course || link.course.archived === true || !isPortalListingVisible(link, now)) {
+          return null;
+        }
+
+        const assessments = await getSelectedAssessments(link, link.course._id);
+        if (!assessments.length) return null;
+
+        const normalizedAssessments = assessments.map((assessment) => normalizeAssessment(assessment));
+        const openAssessments = normalizedAssessments.filter((assessment) => assessment.submissionsOpen);
+        const upcomingDeadlines = normalizedAssessments
+          .map((assessment) => getValidDate(assessment.dueDate))
+          .filter((date) => date && date >= now)
+          .sort((a, b) => a - b);
+
+        return {
+          token: link.token,
+          title: link.title || `${link.course.code || 'Course'} Public Submission`,
+          instructions: link.instructions || '',
+          course: normalizeCourse(link.course),
+          teacher: normalizeTeacher(link.teacher),
+          assessmentCount: normalizedAssessments.length,
+          openAssessmentCount: openAssessments.length,
+          nextDeadline: upcomingDeadlines[0] || null,
+          assessments: normalizedAssessments.map((assessment) => ({
+            id: assessment.id,
+            name: assessment.name,
+            fullMarks: assessment.fullMarks,
+            dueDate: assessment.dueDate,
+            submissionsOpen: assessment.submissionsOpen,
+            dueDatePassed: assessment.dueDatePassed,
+          })),
+        };
+      })
+    );
+
+    const courses = portalRows
+      .filter(Boolean)
+      .sort((a, b) => {
+        const aOpen = a.openAssessmentCount > 0 ? 0 : 1;
+        const bOpen = b.openAssessmentCount > 0 ? 0 : 1;
+        if (aOpen !== bOpen) return aOpen - bOpen;
+
+        const aDeadline = a.nextDeadline ? new Date(a.nextDeadline).getTime() : Number.MAX_SAFE_INTEGER;
+        const bDeadline = b.nextDeadline ? new Date(b.nextDeadline).getTime() : Number.MAX_SAFE_INTEGER;
+        if (aDeadline !== bDeadline) return aDeadline - bDeadline;
+
+        return String(a.course?.code || '').localeCompare(String(b.course?.code || ''));
+      });
+
+    return res.json({
+      portalTitle: 'BUBT Public Submission Portal',
+      generatedAt: now,
+      courses,
+    });
+  } catch (err) {
+    console.error('getPublicSubmissionPortal error', err);
+    return res.status(500).json({ message: 'Failed to load the public submission portal.' });
+  }
+};
+
+const getCurrentPublicSubmissionPage = async (_req, res) => {
+  try {
+    const now = new Date();
+
+    // New settings keep this exclusive. Sorting also gives a safe fallback for
+    // older databases where more than one record may still be marked for /submit.
+    const candidates = await PublicSubmissionLink.find({
+      isActive: true,
+      showOnPortal: true,
+    })
+      .populate('course')
+      .populate('teacher', 'name department designation')
+      .sort({ updatedAt: -1 });
+
+    for (const link of candidates) {
+      if (!link.course || link.course.archived === true || !isPortalListingVisible(link, now)) {
+        continue;
+      }
+
+      const assessments = await getSelectedAssessments(link, link.course._id);
+      if (!assessments.length) continue;
+
+      return res.json({
+        link: normalizeLink(link),
+        course: normalizeCourse(link.course),
+        teacher: normalizeTeacher(link.teacher),
+        assessments: assessments.map((assessment) => normalizeAssessment(assessment)),
+      });
+    }
+
+    return res.status(404).json({
+      message: 'No course is currently selected for the /submit page.',
+    });
+  } catch (err) {
+    console.error('getCurrentPublicSubmissionPage error', err);
+    return res.status(500).json({ message: 'Failed to load the current public submission page.' });
+  }
+};
 
 const getPublicSubmissionPage = async (req, res) => {
   try {
@@ -743,6 +929,8 @@ const submitPublicAssessmentFile = async (req, res) => {
 module.exports = {
   getTeacherPublicSubmissionLink,
   updateTeacherPublicSubmissionLink,
+  getPublicSubmissionPortal,
+  getCurrentPublicSubmissionPage,
   getPublicSubmissionPage,
   verifyPublicRoll,
   getPublicSubmittedFiles,

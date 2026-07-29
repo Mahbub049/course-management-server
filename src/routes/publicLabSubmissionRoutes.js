@@ -13,6 +13,8 @@ const {
 const {
   getTeacherPublicSubmissionLink,
   updateTeacherPublicSubmissionLink,
+  getPublicSubmissionPortal,
+  getCurrentPublicSubmissionPage,
   getPublicSubmissionPage,
   verifyPublicRoll,
   getPublicSubmittedFiles,
@@ -35,6 +37,9 @@ router.patch(
 );
 
 // Public no-login student routes.
+// Keep this fixed endpoint before /:token so Express does not treat "portal" as a token.
+router.get('/portal', getPublicSubmissionPortal);
+router.get('/current', getCurrentPublicSubmissionPage);
 router.get('/:token', getPublicSubmissionPage);
 router.post('/:token/verify-roll', verifyPublicRoll);
 router.get('/:token/submitted-files', getPublicSubmittedFiles);
