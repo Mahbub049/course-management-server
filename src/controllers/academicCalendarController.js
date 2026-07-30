@@ -1,3 +1,4 @@
+const mongoose = require("mongoose");
 const AcademicCalendar = require("../models/AcademicCalendar");
 const FacultyCalendarEvent = require("../models/FacultyCalendarEvent");
 
@@ -268,7 +269,7 @@ exports.getFacultyCalendarEvents = async (req, res) => {
 
     const events = await FacultyCalendarEvent.find({ $and: filters })
       .populate("faculty", "name shortCode")
-      .sort({ date: 1, startTime: 1, createdAt: 1 });
+      .sort({ date: 1, sortOrder: 1, createdAt: -1, startTime: 1 });
 
     return res.json({
       success: true,
@@ -296,6 +297,8 @@ exports.createFacultyCalendarEvent = async (req, res) => {
     const created = await FacultyCalendarEvent.create({
       ...payload,
       faculty: req.user.userId,
+      // New teacher-created items are placed before older and official items.
+      sortOrder: -Date.now(),
     });
 
     const event = await FacultyCalendarEvent.findById(created._id).populate(
@@ -356,6 +359,58 @@ exports.updateFacultyCalendarEvent = async (req, res) => {
     return res.status(500).json({
       success: false,
       message: error.message || "Failed to update calendar item.",
+      error: error.message,
+    });
+  }
+};
+
+exports.reorderFacultyCalendarEvents = async (req, res) => {
+  try {
+    const orderedEventIds = Array.isArray(req.body?.orderedEventIds)
+      ? [...new Set(req.body.orderedEventIds.map((id) => String(id || "").trim()).filter(Boolean))]
+      : [];
+
+    if (
+      orderedEventIds.length < 2 ||
+      orderedEventIds.length > 200 ||
+      orderedEventIds.some((eventId) => !mongoose.Types.ObjectId.isValid(eventId))
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide between 2 and 200 valid calendar item IDs to reorder.",
+      });
+    }
+
+    const ownedEvents = await FacultyCalendarEvent.find({
+      _id: { $in: orderedEventIds },
+      faculty: req.user.userId,
+    }).select("_id");
+
+    if (ownedEvents.length !== orderedEventIds.length) {
+      return res.status(403).json({
+        success: false,
+        message: "You can reorder only calendar items created by you.",
+      });
+    }
+
+    await FacultyCalendarEvent.bulkWrite(
+      orderedEventIds.map((eventId, index) => ({
+        updateOne: {
+          filter: { _id: eventId, faculty: req.user.userId },
+          update: { $set: { sortOrder: index } },
+        },
+      }))
+    );
+
+    return res.json({
+      success: true,
+      message: "Calendar order updated successfully.",
+    });
+  } catch (error) {
+    console.error("Reorder faculty calendar events error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Failed to reorder calendar items.",
       error: error.message,
     });
   }

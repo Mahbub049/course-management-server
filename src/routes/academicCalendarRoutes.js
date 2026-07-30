@@ -8,6 +8,7 @@ const {
   getFacultyCalendarEvents,
   createFacultyCalendarEvent,
   updateFacultyCalendarEvent,
+  reorderFacultyCalendarEvents,
   deleteFacultyCalendarEvent,
 } = require("../controllers/academicCalendarController");
 
@@ -30,6 +31,13 @@ router.post(
   authMiddleware,
   requireTeacher,
   createFacultyCalendarEvent
+);
+
+router.patch(
+  "/faculty-events/reorder",
+  authMiddleware,
+  requireTeacher,
+  reorderFacultyCalendarEvents
 );
 
 router.put(

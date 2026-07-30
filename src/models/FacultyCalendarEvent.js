@@ -76,6 +76,11 @@ const facultyCalendarEventSchema = new mongoose.Schema(
       enum: ALLOWED_PRIORITIES,
       default: "Normal",
     },
+    sortOrder: {
+      type: Number,
+      default: 0,
+      index: true,
+    },
     completed: {
       type: Boolean,
       default: false,
