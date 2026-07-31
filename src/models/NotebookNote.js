@@ -20,12 +20,21 @@ const blankFieldSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const checkboxFieldSchema = new mongoose.Schema(
+  {
+    id: { type: String, trim: true, default: "" },
+    label: { type: String, trim: true, default: "Completed" },
+  },
+  { _id: false }
+);
+
 const notebookSettingsSchema = new mongoose.Schema(
   {
     includeRoll: { type: Boolean, default: true },
     includeName: { type: Boolean, default: true },
     includeFeedback: { type: Boolean, default: true },
     includeMcq: { type: Boolean, default: true },
+    includeCheckbox: { type: Boolean, default: false },
     includeBlankFields: { type: Boolean, default: false },
     includeTotal: { type: Boolean, default: false },
     columnOrder: { type: [String], default: [] },
@@ -41,6 +50,15 @@ const notebookSettingsSchema = new mongoose.Schema(
           id: "mcq_1",
           label: "Marking Category",
           options: ["High", "Medium", "Low"],
+        },
+      ],
+    },
+    checkboxFields: {
+      type: [checkboxFieldSchema],
+      default: () => [
+        {
+          id: "checkbox_1",
+          label: "Completed",
         },
       ],
     },
@@ -64,10 +82,17 @@ const evaluationRowSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    course: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Course",
+      default: null,
+    },
+    courseLabel: { type: String, trim: true, default: "" },
     roll: { type: String, trim: true, default: "" },
     name: { type: String, trim: true, default: "" },
     selectedOption: { type: String, trim: true, default: "" },
     selectedOptions: { type: mongoose.Schema.Types.Mixed, default: {} },
+    checkboxValues: { type: mongoose.Schema.Types.Mixed, default: {} },
     blankValues: { type: mongoose.Schema.Types.Mixed, default: {} },
     feedback: { type: String, default: "" },
   },
@@ -109,6 +134,14 @@ const notebookNoteSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    courseScope: {
+      type: String,
+      enum: ["single", "all"],
+      default: "single",
+      index: true,
+    },
+    scopeSemester: { type: String, trim: true, default: "" },
+    scopeYear: { type: String, trim: true, default: "" },
     title: {
       type: String,
       required: true,

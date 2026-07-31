@@ -13,6 +13,7 @@ const DEFAULT_SETTINGS = {
   includeName: true,
   includeFeedback: true,
   includeMcq: true,
+  includeCheckbox: false,
   includeBlankFields: false,
   includeTotal: false,
   columnOrder: [],
@@ -23,6 +24,12 @@ const DEFAULT_SETTINGS = {
       id: "mcq_1",
       label: "Marking Category",
       options: ["High", "Medium", "Low"],
+    },
+  ],
+  checkboxFields: [
+    {
+      id: "checkbox_1",
+      label: "Completed",
     },
   ],
   blankFields: [
@@ -53,12 +60,14 @@ const cleanOptions = (options) => {
 
 const blankColumnId = (field) => `blank:${field.id}`;
 const mcqColumnId = (field) => `mcq:${field.id}`;
+const checkboxColumnId = (field) => `checkbox:${field.id}`;
 
 const getAllMovableColumnIds = (settings = {}) => [
   "roll",
   "name",
   ...(Array.isArray(settings.blankFields) ? settings.blankFields.map(blankColumnId) : []),
   ...(Array.isArray(settings.mcqFields) ? settings.mcqFields.map(mcqColumnId) : []),
+  ...(Array.isArray(settings.checkboxFields) ? settings.checkboxFields.map(checkboxColumnId) : []),
   "feedback",
 ];
 
@@ -120,9 +129,28 @@ const sanitizeBlankFields = (raw = {}) => {
   });
 };
 
+const sanitizeCheckboxFields = (raw = {}) => {
+  const sourceFields =
+    Array.isArray(raw.checkboxFields) && raw.checkboxFields.length > 0
+      ? raw.checkboxFields
+      : DEFAULT_SETTINGS.checkboxFields;
+
+  const usedIds = new Set();
+  return sourceFields.map((field, index) => {
+    let id = cleanString(field?.id, `checkbox_${index + 1}`);
+    if (usedIds.has(id)) id = `${id}_${index + 1}`;
+    usedIds.add(id);
+    return {
+      id,
+      label: cleanEditableString(field?.label, `Checkbox ${index + 1}`),
+    };
+  });
+};
+
 const sanitizeSettings = (raw = {}) => {
   const mcqFields = sanitizeMcqFields(raw);
   const blankFields = sanitizeBlankFields(raw);
+  const checkboxFields = sanitizeCheckboxFields(raw);
   const firstField = mcqFields[0] || DEFAULT_SETTINGS.mcqFields[0];
 
   const settings = {
@@ -130,11 +158,13 @@ const sanitizeSettings = (raw = {}) => {
     includeName: raw.includeName === undefined ? true : Boolean(raw.includeName),
     includeFeedback: raw.includeFeedback === undefined ? true : Boolean(raw.includeFeedback),
     includeMcq: raw.includeMcq === undefined ? true : Boolean(raw.includeMcq),
+    includeCheckbox: raw.includeCheckbox === undefined ? false : Boolean(raw.includeCheckbox),
     includeBlankFields: raw.includeBlankFields === undefined ? false : Boolean(raw.includeBlankFields),
     includeTotal: raw.includeTotal === undefined ? false : Boolean(raw.includeTotal),
     mcqLabel: firstField.label,
     mcqOptions: firstField.options,
     mcqFields,
+    checkboxFields,
     blankFields,
   };
 
@@ -157,15 +187,31 @@ const sanitizeKeyValueMap = (values = {}) => {
   }, {});
 };
 
+const sanitizeBooleanMap = (values = {}) => {
+  if (!values || typeof values !== "object" || Array.isArray(values)) {
+    return {};
+  }
+
+  return Object.entries(values).reduce((acc, [key, value]) => {
+    const cleanKey = cleanString(key);
+    if (!cleanKey) return acc;
+    acc[cleanKey] = Boolean(value);
+    return acc;
+  }, {});
+};
+
 const sanitizeEvaluationRows = (rows = []) => {
   if (!Array.isArray(rows)) return [];
 
   return rows.map((row) => ({
     student: isValidObjectId(row.student) ? row.student : null,
+    course: isValidObjectId(row.course) ? row.course : null,
+    courseLabel: cleanString(row.courseLabel),
     roll: cleanString(row.roll),
     name: cleanString(row.name),
     selectedOption: cleanString(row.selectedOption),
     selectedOptions: sanitizeKeyValueMap(row.selectedOptions),
+    checkboxValues: sanitizeBooleanMap(row.checkboxValues),
     blankValues: sanitizeKeyValueMap(row.blankValues),
     feedback: typeof row.feedback === "string" ? row.feedback : "",
   }));
@@ -212,27 +258,92 @@ const getOwnedCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
 };
 
-const buildEvaluationRowsFromCourse = async (courseId) => {
-  const enrollments = await Enrollment.find({ course: courseId })
+const formatRowCourseLabel = (course = {}) => {
+  const code = cleanString(course.code, "Course");
+  const title = cleanString(course.title);
+  const section = cleanString(course.section);
+  return `${code}${title ? ` - ${title}` : ""}${section ? ` (${section})` : ""}`;
+};
+
+const buildEvaluationRowsFromCourses = async (courses = []) => {
+  const validCourses = (Array.isArray(courses) ? courses : []).filter((course) => course?._id);
+  if (!validCourses.length) return [];
+
+  const courseMap = new Map(validCourses.map((course) => [String(course._id), course]));
+  const enrollments = await Enrollment.find({
+    course: { $in: validCourses.map((course) => course._id) },
+  })
     .populate("student", "username name")
     .lean();
 
   return enrollments
-    .map((enrollment) => ({
-      student: enrollment.student?._id || null,
-      roll: enrollment.student?.username || "",
-      name: enrollment.student?.name || "",
-      selectedOption: "",
-      selectedOptions: {},
-      blankValues: {},
-      feedback: "",
-    }))
-    .sort((a, b) =>
-      String(a.roll || "").localeCompare(String(b.roll || ""), undefined, {
+    .map((enrollment) => {
+      const course = courseMap.get(String(enrollment.course));
+      return {
+        student: enrollment.student?._id || null,
+        course: course?._id || enrollment.course || null,
+        courseLabel: formatRowCourseLabel(course),
+        roll: enrollment.student?.username || "",
+        name: enrollment.student?.name || "",
+        selectedOption: "",
+        selectedOptions: {},
+        checkboxValues: {},
+        blankValues: {},
+        feedback: "",
+      };
+    })
+    .sort((a, b) => {
+      const courseDifference = String(a.courseLabel || "").localeCompare(
+        String(b.courseLabel || ""),
+        undefined,
+        { numeric: true, sensitivity: "base" }
+      );
+      if (courseDifference) return courseDifference;
+      return String(a.roll || "").localeCompare(String(b.roll || ""), undefined, {
         numeric: true,
         sensitivity: "base",
-      })
-    );
+      });
+    });
+};
+
+const buildEvaluationRowsFromCourse = async (course) =>
+  buildEvaluationRowsFromCourses([course]);
+
+const buildScopedCourseQuery = (teacherId, semester = "", year = "") => {
+  const query = {
+    createdBy: teacherId,
+    archived: { $ne: true },
+  };
+
+  const cleanSemester = cleanString(semester);
+  const cleanYear = cleanString(year);
+  if (cleanSemester) query.semester = cleanSemester;
+  if (cleanYear) {
+    const numericYear = Number(cleanYear);
+    query.year = Number.isFinite(numericYear) ? numericYear : cleanYear;
+  }
+
+  return query;
+};
+
+const getScopedCourses = async (teacherId, semester = "", year = "") =>
+  Course.find(buildScopedCourseQuery(teacherId, semester, year)).sort({
+    year: -1,
+    semester: 1,
+    code: 1,
+    section: 1,
+  });
+
+const evaluationRowIdentity = (row = {}, fallbackCourseId = "") => {
+  const courseId =
+    row.course?.toString?.() ||
+    (row.course ? String(row.course) : "") ||
+    String(fallbackCourseId || "");
+  const studentId =
+    row.student?.toString?.() || (row.student ? String(row.student) : "");
+  const roll = cleanString(row.roll);
+  const studentKey = studentId || (roll ? `roll:${roll}` : "");
+  return courseId && studentKey ? `${courseId}::${studentKey}` : "";
 };
 
 exports.getNotebookNotes = async (req, res) => {
@@ -270,35 +381,70 @@ exports.createNotebookNote = async (req, res) => {
   try {
     const teacherId = req.user.userId;
     const type = req.body.type === "evaluation" ? "evaluation" : "simple";
-    const title = cleanString(req.body.title, type === "evaluation" ? "Evaluation Sheet" : "Simple Note");
+    const title = cleanString(
+      req.body.title,
+      type === "evaluation" ? "Evaluation Sheet" : "Simple Note"
+    );
+    const requestedScope =
+      type === "evaluation" && req.body.courseScope === "all" ? "all" : "single";
     const courseId = req.body.courseId || req.body.course || null;
 
     let course = null;
-    if (courseId) {
+    let scopeCourses = [];
+    let scopeSemester = "";
+    let scopeYear = "";
+
+    if (requestedScope === "all") {
+      scopeSemester = cleanString(req.body.scopeSemester);
+      scopeYear = cleanString(req.body.scopeYear);
+      scopeCourses = await getScopedCourses(teacherId, scopeSemester, scopeYear);
+
+      if (!scopeCourses.length) {
+        return res.status(404).json({
+          message: "No active course was found for the selected semester.",
+        });
+      }
+
+      scopeSemester = scopeSemester || cleanString(scopeCourses[0]?.semester);
+      scopeYear = scopeYear || cleanString(String(scopeCourses[0]?.year || ""));
+    } else if (courseId) {
       course = await getOwnedCourse(courseId, teacherId);
       if (!course) {
         return res.status(404).json({ message: "Selected course was not found." });
       }
     }
 
-    if (type === "evaluation" && !course) {
-      return res.status(400).json({ message: "Course is required for an evaluation sheet." });
+    if (type === "evaluation" && requestedScope === "single" && !course) {
+      return res.status(400).json({
+        message: "Course is required for an evaluation sheet.",
+      });
     }
 
     const settings = sanitizeSettings(req.body.settings || {});
-    const evaluationRows =
-      type === "evaluation" ? await buildEvaluationRowsFromCourse(course._id) : [];
+    let evaluationRows = [];
+    if (type === "evaluation") {
+      evaluationRows =
+        requestedScope === "all"
+          ? await buildEvaluationRowsFromCourses(scopeCourses)
+          : await buildEvaluationRowsFromCourse(course);
+    }
 
     const note = await NotebookNote.create({
       teacher: teacherId,
-      course: course?._id || null,
+      course: requestedScope === "single" ? course?._id || null : null,
+      courseScope: requestedScope,
+      scopeSemester: requestedScope === "all" ? scopeSemester : "",
+      scopeYear: requestedScope === "all" ? scopeYear : "",
       title,
       type,
       date: cleanString(req.body.date),
       time: cleanString(req.body.time),
       settings,
       evaluationRows,
-      content: type === "simple" && typeof req.body.content === "string" ? req.body.content : "",
+      content:
+        type === "simple" && typeof req.body.content === "string"
+          ? req.body.content
+          : "",
     });
 
     const populated = await NotebookNote.findById(note._id).populate(
@@ -377,6 +523,16 @@ exports.updateNotebookNote = async (req, res) => {
       note.evaluationRows = sanitizeEvaluationRows(req.body.evaluationRows);
     }
 
+    if (note.type === "evaluation" && req.body.courseScope !== undefined) {
+      note.courseScope = req.body.courseScope === "all" ? "all" : "single";
+    }
+    if (req.body.scopeSemester !== undefined) {
+      note.scopeSemester = cleanString(req.body.scopeSemester);
+    }
+    if (req.body.scopeYear !== undefined) {
+      note.scopeYear = cleanString(req.body.scopeYear);
+    }
+
     if (req.body.courseId !== undefined || req.body.course !== undefined) {
       const nextCourseId = req.body.courseId || req.body.course || null;
       if (nextCourseId) {
@@ -385,14 +541,27 @@ exports.updateNotebookNote = async (req, res) => {
           return res.status(404).json({ message: "Selected course was not found." });
         }
         note.course = course._id;
-      } else if (note.type === "simple") {
+      } else if (note.type === "simple" || note.courseScope === "all") {
         note.course = null;
       }
     }
 
+    if (note.type === "evaluation" && note.courseScope === "all") {
+      note.course = null;
+      note.markSyncMappings = [];
+    } else if (note.type !== "evaluation") {
+      note.courseScope = "single";
+      note.scopeSemester = "";
+      note.scopeYear = "";
+    }
+
     await note.save();
 
-    if (note.type === "evaluation" && note.markSyncMappings?.length) {
+    if (
+      note.type === "evaluation" &&
+      note.courseScope !== "all" &&
+      note.markSyncMappings?.length
+    ) {
       try {
         await syncNotebookMappings(note);
       } catch (syncError) {
@@ -429,36 +598,52 @@ exports.refreshNotebookStudents = async (req, res) => {
     }
 
     if (note.type !== "evaluation") {
-      return res.status(400).json({ message: "Student refresh is available only for evaluation sheets." });
+      return res.status(400).json({
+        message: "Student refresh is available only for evaluation sheets.",
+      });
     }
 
-    if (!note.course) {
-      return res.status(400).json({ message: "This evaluation sheet is not connected to a course." });
+    const isAllCourses = note.courseScope === "all";
+    let latestRows = [];
+    let fallbackCourseId = "";
+
+    if (isAllCourses) {
+      const courses = await getScopedCourses(
+        teacherId,
+        note.scopeSemester,
+        note.scopeYear
+      );
+      if (!courses.length) {
+        return res.status(404).json({
+          message: "No active course was found for this sheet's semester.",
+        });
+      }
+      latestRows = await buildEvaluationRowsFromCourses(courses);
+    } else {
+      if (!note.course) {
+        return res.status(400).json({
+          message: "This evaluation sheet is not connected to a course.",
+        });
+      }
+
+      const course = await getOwnedCourse(note.course, teacherId);
+      if (!course) {
+        return res.status(404).json({ message: "Connected course was not found." });
+      }
+      fallbackCourseId = course._id;
+      latestRows = await buildEvaluationRowsFromCourse(course);
     }
 
-    const course = await getOwnedCourse(note.course, teacherId);
-    if (!course) {
-      return res.status(404).json({ message: "Connected course was not found." });
-    }
-
-    const latestRows = await buildEvaluationRowsFromCourse(course._id);
-    const existingStudentIds = new Set();
-    const existingRolls = new Set();
-
+    const existingKeys = new Set();
     note.evaluationRows.forEach((row) => {
-      const studentId = row.student?.toString?.() || (row.student ? String(row.student) : "");
-      const roll = cleanString(row.roll);
-      if (studentId) existingStudentIds.add(studentId);
-      if (roll) existingRolls.add(roll);
+      const key = evaluationRowIdentity(row, fallbackCourseId);
+      if (key) existingKeys.add(key);
     });
 
     const rowsToAdd = latestRows.filter((row) => {
-      const studentId = row.student?.toString?.() || (row.student ? String(row.student) : "");
-      const roll = cleanString(row.roll);
-      if (studentId && existingStudentIds.has(studentId)) return false;
-      if (roll && existingRolls.has(roll)) return false;
-      if (studentId) existingStudentIds.add(studentId);
-      if (roll) existingRolls.add(roll);
+      const key = evaluationRowIdentity(row, fallbackCourseId);
+      if (!key || existingKeys.has(key)) return false;
+      existingKeys.add(key);
       return true;
     });
 
@@ -475,7 +660,9 @@ exports.refreshNotebookStudents = async (req, res) => {
     return res.json({
       message:
         rowsToAdd.length > 0
-          ? `${rowsToAdd.length} new student${rowsToAdd.length === 1 ? "" : "s"} added.`
+          ? `${rowsToAdd.length} new student entr${
+              rowsToAdd.length === 1 ? "y" : "ies"
+            } added.`
           : "Student data is already up to date.",
       addedCount: rowsToAdd.length,
       note: formatNote(populated),
