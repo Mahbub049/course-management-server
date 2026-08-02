@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Routine = require("../models/Routine");
 const Enrollment = require("../models/Enrollment");
 const CounsellingBooking = require("../models/CounsellingBooking");
+const CounsellingRecord = require("../models/CounsellingRecord");
 const User = require("../models/User");
 const Course = require("../models/Course");
 const { sendMail } = require("../utils/mailer");
@@ -297,6 +298,62 @@ function hasCourseInfo(courseInfo = {}) {
       courseInfo.intake ||
       courseInfo.section
   );
+}
+
+function formatCounsellingRecord(record = {}) {
+  return {
+    id: record._id?.toString?.() || record.id?.toString?.() || "",
+    courseId: record.course?._id?.toString?.() || record.course?.toString?.() || "",
+    date: record.date || "",
+    startTime: record.startTime || "",
+    endTime: record.endTime || "",
+    venue: record.venue || "",
+    topic: record.topic || "",
+    notes: record.notes || "",
+    sessionStatus: record.sessionStatus || "scheduled",
+    courseCode: record.courseCode || "",
+    courseTitle: record.courseTitle || "",
+    intake: record.intake || "",
+    section: record.section || "",
+    semester: record.semester || "",
+    year: record.year || null,
+    department: record.department || "",
+    shift: record.shift || "",
+    participants: (record.participants || []).map((participant) => ({
+      studentId: participant.student?._id?.toString?.() || participant.student?.toString?.() || "",
+      roll: participant.roll || participant.student?.username || "",
+      name: participant.name || participant.student?.name || "",
+    })),
+    createdAt: record.createdAt || null,
+    updatedAt: record.updatedAt || null,
+  };
+}
+
+function formatTeacherProfile(teacher = {}) {
+  if (!teacher) return null;
+  return {
+    id: teacher._id?.toString?.() || "",
+    name: teacher.name || "",
+    designation: teacher.designation || "",
+    department: teacher.department || "",
+    shortCode: teacher.shortCode || "",
+    signatureImage: teacher.signatureImage || "",
+  };
+}
+
+function formatCounsellingCourse(course = {}) {
+  return {
+    id: course._id?.toString?.() || course.id?.toString?.() || "",
+    code: course.code || "",
+    title: course.title || "",
+    intake: course.intake || "",
+    section: course.section || "",
+    semester: course.semester || "",
+    year: Number(course.year) || null,
+    department: course.department || "",
+    shift: course.shift || "",
+    archived: course.archived === true,
+  };
 }
 
 function formatBooking(booking) {
@@ -928,6 +985,7 @@ const deleteStudentCounsellingBooking = async (req, res) => {
 const getTeacherCounsellingBookings = async (req, res) => {
   try {
     const teacherId = req.user.userId;
+    const includeRegister = String(req.query?.includeRegister || "").toLowerCase() === "true";
 
     const [routine, bookings] = await Promise.all([
       findRoutineRaw(teacherId),
@@ -945,11 +1003,33 @@ const getTeacherCounsellingBookings = async (req, res) => {
       formatBooking(applyCourseContext(booking, courseByStudent))
     );
 
-    return res.json({
+    const response = {
       counsellingSlots: formatCounsellingSlots(routine),
       timeSlots: formatRoutineTimeSlots(routine),
       bookings: formattedBookings,
-    });
+    };
+
+    if (includeRegister) {
+      const [records, courses, teacher] = await Promise.all([
+        CounsellingRecord.find({ teacher: teacherId })
+          .sort({ date: -1, createdAt: -1 })
+          .limit(300)
+          .lean(),
+        Course.find({ createdBy: teacherId })
+          .select("code title intake section semester year department shift archived")
+          .sort({ year: -1, semester: -1, code: 1, intake: 1, section: 1 })
+          .lean(),
+        User.findById(teacherId)
+          .select("name designation department shortCode signatureImage")
+          .lean(),
+      ]);
+
+      response.records = records.map(formatCounsellingRecord);
+      response.courses = courses.map(formatCounsellingCourse);
+      response.teacher = formatTeacherProfile(teacher);
+    }
+
+    return res.json(response);
   } catch (err) {
     console.error("getTeacherCounsellingBookings error:", err);
     return res.status(500).json({ message: "Failed to load counselling bookings" });
@@ -1031,6 +1111,185 @@ const updateTeacherCounsellingBooking = async (req, res) => {
 };
 
 
+const createTeacherCounsellingRecord = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const courseId = cleanString(req.body?.courseId);
+    const studentIds = Array.isArray(req.body?.studentIds)
+      ? [...new Set(req.body.studentIds.map((value) => cleanString(value)).filter(Boolean))]
+      : [];
+    const date = cleanString(req.body?.date);
+    const startTime = cleanString(req.body?.startTime);
+    const endTime = cleanString(req.body?.endTime);
+    const venue = cleanString(req.body?.venue);
+    const topic = cleanString(req.body?.topic);
+    const notes = cleanString(req.body?.notes);
+    const sessionStatus = cleanString(req.body?.sessionStatus).toLowerCase();
+
+    if (!mongoose.isValidObjectId(courseId)) {
+      return res.status(400).json({ message: "Please select a valid course." });
+    }
+    if (!studentIds.length || studentIds.some((id) => !mongoose.isValidObjectId(id))) {
+      return res.status(400).json({ message: "Please select at least one valid student." });
+    }
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return res.status(400).json({ message: "Please select a valid counselling date." });
+    }
+    if (!/^\d{2}:\d{2}$/.test(startTime)) {
+      return res.status(400).json({ message: "Please select a valid start time." });
+    }
+    if (endTime && !/^\d{2}:\d{2}$/.test(endTime)) {
+      return res.status(400).json({ message: "Please select a valid end time." });
+    }
+    if (endTime && endTime <= startTime) {
+      return res.status(400).json({ message: "End time must be later than start time." });
+    }
+    if (!topic) {
+      return res.status(400).json({ message: "Counselling topic or purpose is required." });
+    }
+    if (!["completed", "scheduled"].includes(sessionStatus)) {
+      return res.status(400).json({ message: "Please select whether the counselling was taken or will be taken." });
+    }
+
+    const course = await Course.findOne({ _id: courseId, createdBy: teacherId }).lean();
+    if (!course) {
+      return res.status(404).json({ message: "Course not found or it does not belong to you." });
+    }
+
+    const enrollments = await Enrollment.find({
+      course: courseId,
+      student: { $in: studentIds },
+    })
+      .populate("student", "name username")
+      .lean();
+
+    const participants = enrollments
+      .filter((item) => item.student)
+      .map((item) => ({
+        student: item.student._id,
+        roll: item.student.username || "",
+        name: item.student.name || "Student",
+      }));
+
+    if (participants.length !== studentIds.length) {
+      return res.status(400).json({
+        message: "One or more selected students are not enrolled in the selected course.",
+      });
+    }
+
+    const record = await CounsellingRecord.create({
+      teacher: teacherId,
+      course: courseId,
+      participants,
+      date,
+      startTime,
+      endTime,
+      venue,
+      topic,
+      notes,
+      sessionStatus,
+      courseCode: course.code || "",
+      courseTitle: course.title || "",
+      intake: course.intake || "",
+      section: course.section || "",
+      semester: course.semester || "",
+      year: Number(course.year) || null,
+      department: course.department || "",
+      shift: course.shift || "",
+    });
+
+    return res.status(201).json({
+      message: "Counselling entry saved successfully.",
+      record: formatCounsellingRecord(record.toObject()),
+    });
+  } catch (err) {
+    console.error("createTeacherCounsellingRecord error:", err);
+    return res.status(500).json({ message: "Failed to save counselling entry." });
+  }
+};
+
+const deleteTeacherCounsellingRecord = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const { recordId } = req.params;
+
+    const record = await CounsellingRecord.findOne({ _id: recordId, teacher: teacherId });
+    if (!record) {
+      return res.status(404).json({ message: "Counselling entry not found." });
+    }
+
+    await record.deleteOne();
+    return res.json({ message: "Counselling entry deleted." });
+  } catch (err) {
+    console.error("deleteTeacherCounsellingRecord error:", err);
+    return res.status(500).json({ message: "Failed to delete counselling entry." });
+  }
+};
+
+const getTeacherCounsellingReport = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const courseId = cleanString(req.query?.courseId);
+    const semester = cleanString(req.query?.semester);
+    const yearRaw = cleanString(req.query?.year);
+    const intake = cleanString(req.query?.intake);
+    const section = cleanString(req.query?.section);
+    const sessionStatus = cleanString(req.query?.sessionStatus).toLowerCase();
+    const dateFrom = cleanString(req.query?.dateFrom);
+    const dateTo = cleanString(req.query?.dateTo);
+
+    const filter = { teacher: teacherId };
+    if (courseId) {
+      if (!mongoose.isValidObjectId(courseId)) {
+        return res.status(400).json({ message: "Invalid course filter." });
+      }
+      filter.course = courseId;
+    }
+    if (semester) filter.semester = semester;
+    if (yearRaw) {
+      const year = Number(yearRaw);
+      if (!Number.isFinite(year)) return res.status(400).json({ message: "Invalid year filter." });
+      filter.year = year;
+    }
+    if (intake) filter.intake = intake;
+    if (section) filter.section = section;
+    if (["completed", "scheduled"].includes(sessionStatus)) {
+      filter.sessionStatus = sessionStatus;
+    }
+    if (dateFrom || dateTo) {
+      filter.date = {};
+      if (dateFrom) filter.date.$gte = dateFrom;
+      if (dateTo) filter.date.$lte = dateTo;
+    }
+
+    const [records, teacher] = await Promise.all([
+      CounsellingRecord.find(filter).sort({ date: 1, startTime: 1, createdAt: 1 }).lean(),
+      User.findById(teacherId)
+        .select("name designation department shortCode signatureImage")
+        .lean(),
+    ]);
+
+    return res.json({
+      universityName: "Bangladesh University of Business and Technology (BUBT)",
+      teacher: formatTeacherProfile(teacher),
+      filters: {
+        courseId,
+        semester,
+        year: yearRaw ? Number(yearRaw) : null,
+        intake,
+        section,
+        sessionStatus: ["completed", "scheduled"].includes(sessionStatus) ? sessionStatus : "all",
+        dateFrom,
+        dateTo,
+      },
+      records: records.map(formatCounsellingRecord),
+    });
+  } catch (err) {
+    console.error("getTeacherCounsellingReport error:", err);
+    return res.status(500).json({ message: "Failed to prepare counselling report." });
+  }
+};
+
 const deleteTeacherCounsellingBooking = async (req, res) => {
   try {
     const teacherId = req.user.userId;
@@ -1066,4 +1325,7 @@ module.exports = {
   getTeacherCounsellingBookings,
   updateTeacherCounsellingBooking,
   deleteTeacherCounsellingBooking,
+  createTeacherCounsellingRecord,
+  deleteTeacherCounsellingRecord,
+  getTeacherCounsellingReport,
 };

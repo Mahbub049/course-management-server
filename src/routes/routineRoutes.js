@@ -18,6 +18,9 @@ const {
   getTeacherCounsellingBookings,
   updateTeacherCounsellingBooking,
   deleteTeacherCounsellingBooking,
+  createTeacherCounsellingRecord,
+  deleteTeacherCounsellingRecord,
+  getTeacherCounsellingReport,
 } = require("../controllers/routineController");
 
 router.get("/reference-data", getRoutineReferenceData);
@@ -30,6 +33,13 @@ router.get("/my/download/class-routine", requireTeacher, downloadMyClassRoutine)
 router.get("/my/download/faculty-nameplate", requireTeacher, downloadMyFacultyNameplate);
 
 router.get("/my/counselling-bookings", requireTeacher, getTeacherCounsellingBookings);
+router.get("/my/counselling-records/report", requireTeacher, getTeacherCounsellingReport);
+router.post("/my/counselling-records", requireTeacher, createTeacherCounsellingRecord);
+router.delete(
+  "/my/counselling-records/:recordId",
+  requireTeacher,
+  deleteTeacherCounsellingRecord
+);
 // Backward-compatible aliases for any older local client file that still calls underscore URLs.
 router.get("/my_counselling_bookings", requireTeacher, getTeacherCounsellingBookings);
 router.patch(
