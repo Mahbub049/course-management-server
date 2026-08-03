@@ -654,6 +654,7 @@ const getStudentCourses = async (req, res) => {
         id: cid,
         code: course.code,
         title: course.title,
+        intake: course.intake || "",
         section: course.section,
         semester: course.semester,
         year: course.year,
