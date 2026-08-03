@@ -23,7 +23,14 @@ const {
 
 const app = express();
 
-const allowedOrigins = [
+const configuredOrigins = String(
+  process.env.CLIENT_ORIGINS || process.env.FRONTEND_URL || ''
+)
+  .split(',')
+  .map((origin) => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = new Set([
   'http://localhost:5173',
   'https://course-management-client-puce.vercel.app',
   'https://bubt-courses.vercel.app',
@@ -33,15 +40,19 @@ const allowedOrigins = [
   'https://bubt-courses.firebaseapp.com',
   'https://bubt.web.app',
   'https://bubt.firebaseapp.com',
-];
+  ...configuredOrigins,
+]);
+
+function isAllowedOrigin(origin) {
+  if (allowedOrigins.has(origin)) return true;
+
+  // Vite may automatically use another local port when 5173 is occupied.
+  return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
+}
 
 const corsOptions = {
   origin: function (origin, callback) {
-    if (!origin) {
-      return callback(null, true);
-    }
-
-    if (allowedOrigins.includes(origin)) {
+    if (!origin || isAllowedOrigin(origin)) {
       return callback(null, true);
     }
 
@@ -49,7 +60,18 @@ const corsOptions = {
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  allowedHeaders: [
+    'Accept',
+    'Content-Type',
+    'Authorization',
+    'Cache-Control',
+    'Pragma',
+    'Expires',
+    'X-Requested-With',
+  ],
+  exposedHeaders: ['Content-Disposition'],
+  optionsSuccessStatus: 204,
+  maxAge: 86400,
 };
 
 app.use(cors(corsOptions));
