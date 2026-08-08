@@ -17,6 +17,7 @@ const publicLabSubmissionRoutes = require('./routes/publicLabSubmissionRoutes');
 const routineRoutes = require('./routes/routineRoutes');
 const academicCalendarRoutes = require("./routes/academicCalendarRoutes");
 const notebookRoutes = require("./routes/notebookRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
 const {
   MAX_SUBMISSION_UPLOAD_MB,
 } = require('./middleware/submissionUploadMiddleware');
@@ -40,6 +41,8 @@ const allowedOrigins = new Set([
   'https://bubt-courses.firebaseapp.com',
   'https://bubt.web.app',
   'https://bubt.firebaseapp.com',
+  'capacitor://localhost',
+  'ionic://localhost',
   ...configuredOrigins,
 ]);
 
@@ -96,6 +99,7 @@ app.use('/api/public-lab-submissions', publicLabSubmissionRoutes);
 app.use('/api/routine', routineRoutes);
 app.use("/api/academic-calendar", academicCalendarRoutes);
 app.use("/api/notebook", notebookRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 app.use((err, _req, res, next) => {
   if (err?.code === 'LIMIT_FILE_SIZE') {
