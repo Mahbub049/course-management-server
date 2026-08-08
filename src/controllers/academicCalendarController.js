@@ -1,6 +1,7 @@
 const mongoose = require("mongoose");
 const AcademicCalendar = require("../models/AcademicCalendar");
 const FacultyCalendarEvent = require("../models/FacultyCalendarEvent");
+const { notifyFacultyEventChange } = require("../utils/facultyCalendarPush");
 
 const ALLOWED_EVENT_CATEGORIES = [
   "Holiday",
@@ -306,6 +307,12 @@ exports.createFacultyCalendarEvent = async (req, res) => {
       "name shortCode"
     );
 
+    try {
+      await notifyFacultyEventChange(event, "created");
+    } catch (pushError) {
+      console.error("Calendar item created but push notification failed:", pushError);
+    }
+
     return res.status(201).json({
       success: true,
       message:
@@ -333,6 +340,18 @@ exports.updateFacultyCalendarEvent = async (req, res) => {
       return res.status(400).json({ success: false, message: validationMessage });
     }
 
+    const existing = await FacultyCalendarEvent.findOne({
+      _id: req.params.eventId,
+      faculty: req.user.userId,
+    }).lean();
+
+    if (!existing) {
+      return res.status(404).json({
+        success: false,
+        message: "Calendar item not found or you do not have permission to edit it.",
+      });
+    }
+
     const updated = await FacultyCalendarEvent.findOneAndUpdate(
       {
         _id: req.params.eventId,
@@ -347,6 +366,14 @@ exports.updateFacultyCalendarEvent = async (req, res) => {
         success: false,
         message: "Calendar item not found or you do not have permission to edit it.",
       });
+    }
+
+    try {
+      await notifyFacultyEventChange(updated, "updated", {
+        previousVisibility: existing.visibility,
+      });
+    } catch (pushError) {
+      console.error("Calendar item updated but push notification failed:", pushError);
     }
 
     return res.json({
@@ -421,13 +448,21 @@ exports.deleteFacultyCalendarEvent = async (req, res) => {
     const event = await FacultyCalendarEvent.findOneAndDelete({
       _id: req.params.eventId,
       faculty: req.user.userId,
-    });
+    }).populate("faculty", "name shortCode");
 
     if (!event) {
       return res.status(404).json({
         success: false,
         message: "Calendar item not found or you do not have permission to delete it.",
       });
+    }
+
+    try {
+      await notifyFacultyEventChange(event, "deleted", {
+        previousVisibility: event.visibility,
+      });
+    } catch (pushError) {
+      console.error("Calendar item deleted but push notification failed:", pushError);
     }
 
     return res.json({

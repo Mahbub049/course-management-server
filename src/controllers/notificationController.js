@@ -1,5 +1,6 @@
 const UserNotificationPreference = require("../models/UserNotificationPreference");
 const UserReminderState = require("../models/UserReminderState");
+const { isFirebasePushConfigured, sendPushToUserIds } = require("../utils/firebasePushService");
 
 const DEFAULT_CATEGORIES = {
   tasks: true,
@@ -54,6 +55,7 @@ exports.getNotificationProfile = async (req, res) => {
       success: true,
       preferences,
       states,
+      serverPushEnabled: isFirebasePushConfigured(),
     });
   } catch (error) {
     console.error("Get notification profile error:", error);
@@ -200,6 +202,50 @@ exports.unregisterDeviceToken = async (req, res) => {
       success: false,
       message: "Failed to remove notification device.",
       error: error.message,
+    });
+  }
+};
+
+exports.sendServerPushTest = async (req, res) => {
+  try {
+    if (!isFirebasePushConfigured()) {
+      return res.status(503).json({
+        success: false,
+        message: "Server push is not configured yet.",
+      });
+    }
+
+    const result = await sendPushToUserIds([req.user.userId], {
+      title: "BUBT Marks Portal",
+      body: "Server push test successful. Web-created and shared calendar notifications can reach this phone.",
+      tag: `server-push-test-${req.user.userId}`,
+      data: {
+        pushKind: "server-test",
+        route: "/notifications",
+      },
+    });
+
+    if (!result.targetCount) {
+      return res.status(409).json({
+        success: false,
+        message: "No registered phone was found for this account. Open the Android app once and allow notifications, then try again.",
+        result,
+      });
+    }
+
+    return res.json({
+      success: result.successCount > 0,
+      message:
+        result.successCount > 0
+          ? "Server push test sent successfully."
+          : "The server found the phone but FCM could not deliver the test.",
+      result,
+    });
+  } catch (error) {
+    console.error("Server push test error:", error);
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Server push test failed.",
     });
   }
 };

@@ -6,6 +6,7 @@ const {
   setReminderState,
   registerDeviceToken,
   unregisterDeviceToken,
+  sendServerPushTest,
 } = require("../controllers/notificationController");
 
 const router = express.Router();
@@ -16,5 +17,6 @@ router.put("/preferences", updateNotificationPreferences);
 router.put("/state", setReminderState);
 router.post("/device-token", registerDeviceToken);
 router.delete("/device-token", unregisterDeviceToken);
+router.post("/test-push", sendServerPushTest);
 
 module.exports = router;
