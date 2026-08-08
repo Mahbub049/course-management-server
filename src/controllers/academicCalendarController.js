@@ -1,7 +1,6 @@
 const mongoose = require("mongoose");
 const AcademicCalendar = require("../models/AcademicCalendar");
 const FacultyCalendarEvent = require("../models/FacultyCalendarEvent");
-const { notifyFacultyEventChange } = require("../utils/facultyCalendarPush");
 
 const ALLOWED_EVENT_CATEGORIES = [
   "Holiday",
@@ -307,11 +306,6 @@ exports.createFacultyCalendarEvent = async (req, res) => {
       "name shortCode"
     );
 
-    try {
-      await notifyFacultyEventChange(event, "created");
-    } catch (pushError) {
-      console.error("Calendar item created but push notification failed:", pushError);
-    }
 
     return res.status(201).json({
       success: true,
@@ -368,13 +362,6 @@ exports.updateFacultyCalendarEvent = async (req, res) => {
       });
     }
 
-    try {
-      await notifyFacultyEventChange(updated, "updated", {
-        previousVisibility: existing.visibility,
-      });
-    } catch (pushError) {
-      console.error("Calendar item updated but push notification failed:", pushError);
-    }
 
     return res.json({
       success: true,
@@ -457,13 +444,6 @@ exports.deleteFacultyCalendarEvent = async (req, res) => {
       });
     }
 
-    try {
-      await notifyFacultyEventChange(event, "deleted", {
-        previousVisibility: event.visibility,
-      });
-    } catch (pushError) {
-      console.error("Calendar item deleted but push notification failed:", pushError);
-    }
 
     return res.json({
       success: true,
