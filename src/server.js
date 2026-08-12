@@ -72,6 +72,7 @@ const corsOptions = {
     'Pragma',
     'Expires',
     'X-Requested-With',
+    'X-Public-Submission-Device',
   ],
   exposedHeaders: ['Content-Disposition'],
   optionsSuccessStatus: 204,

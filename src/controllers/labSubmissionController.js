@@ -1,5 +1,6 @@
 const archiver = require('archiver');
 const path = require('path');
+const mongoose = require('mongoose');
 
 const Assessment = require('../models/Assessment');
 const Course = require('../models/Course');
@@ -7,6 +8,7 @@ const Enrollment = require('../models/Enrollment');
 const User = require('../models/User');
 const Mark = require('../models/Mark');
 const LabSubmission = require('../models/LabSubmission');
+const PublicSubmissionClaim = require('../models/PublicSubmissionClaim');
 
 const DEFAULT_ALLOWED_EXTENSIONS = [
   'pdf',
@@ -78,6 +80,58 @@ function normalizeAllowedExtensions(value) {
   return unique.length ? unique : DEFAULT_ALLOWED_EXTENSIONS;
 }
 
+function normalizeEligibilityMode(value) {
+  return String(value || '').toLowerCase() === 'selected' ? 'selected' : 'all';
+}
+
+function getEligibleStudentIds(cfg = {}) {
+  return Array.isArray(cfg?.eligibleStudents)
+    ? cfg.eligibleStudents.map((id) => String(id || '')).filter(Boolean)
+    : [];
+}
+
+function isAssessmentEligibleForStudent(assessment, studentId) {
+  const cfg = assessment?.submissionConfig || {};
+  if (normalizeEligibilityMode(cfg.eligibilityMode) !== 'selected') return true;
+  const targetId = String(studentId || '');
+  return getEligibleStudentIds(cfg).some((id) => id === targetId);
+}
+
+async function resolveEligibleStudentIds(courseId, mode, rawStudentIds) {
+  if (normalizeEligibilityMode(mode) !== 'selected') return [];
+
+  const requested = Array.from(
+    new Set(
+      (Array.isArray(rawStudentIds) ? rawStudentIds : [])
+        .map((id) => String(id || '').trim())
+        .filter((id) => mongoose.Types.ObjectId.isValid(id))
+    )
+  );
+
+  if (!requested.length) {
+    const err = new Error('Select at least one student for this submission assessment.');
+    err.status = 400;
+    throw err;
+  }
+
+  const enrollments = await Enrollment.find({
+    course: courseId,
+    student: { $in: requested },
+  }).select('student');
+
+  const enrolledIds = Array.from(
+    new Set(enrollments.map((item) => String(item.student || '')).filter(Boolean))
+  );
+
+  if (!enrolledIds.length) {
+    const err = new Error('None of the selected students are enrolled in this course.');
+    err.status = 400;
+    throw err;
+  }
+
+  return enrolledIds;
+}
+
 function getFileExtension(fileName = '') {
   const ext = path.extname(fileName || '').toLowerCase().replace(/^\./, '');
   return ext;
@@ -96,6 +150,7 @@ const {
   createSubmissionSignedUrl,
   downloadSubmissionBuffer,
 } = require('../utils/labSubmissionStorage');
+const { buildSubmissionIntegrity } = require('../utils/submissionIntegrity');
 
 function getValidDate(value) {
   if (!value) return null;
@@ -157,6 +212,12 @@ function normalizeSubmissionAssessment(a, markSyncOverride = null) {
     maxFileSizeMB: Number(cfg.maxFileSizeMB || 10),
     allowedExtensions: normalizeAllowedExtensions(cfg.allowedExtensions),
     allowResubmission: cfg.allowResubmission !== false,
+    eligibilityMode: normalizeEligibilityMode(cfg.eligibilityMode),
+    eligibleStudentIds: getEligibleStudentIds(cfg),
+    eligibleStudentCount:
+      normalizeEligibilityMode(cfg.eligibilityMode) === 'selected'
+        ? getEligibleStudentIds(cfg).length
+        : null,
     resourceTitle: cfg.resourceUrl ? normalizeResourceTitle(cfg.resourceTitle) : '',
     resourceUrl: normalizeResourceUrl(cfg.resourceUrl),
     isVisibleToStudents: !!cfg.isVisibleToStudents,
@@ -630,6 +691,15 @@ const createTeacherSubmissionAssessment = async (req, res) => {
       return res.status(404).json({ message: 'Course not found.' });
     }
 
+    const eligibilityMode = normalizeEligibilityMode(
+      submissionConfig.eligibilityMode
+    );
+    const eligibleStudents = await resolveEligibleStudentIds(
+      courseId,
+      eligibilityMode,
+      submissionConfig.eligibleStudentIds || submissionConfig.eligibleStudents
+    );
+
     const assessment = await Assessment.create({
       course: courseId,
       name: String(name).trim(),
@@ -642,6 +712,8 @@ const createTeacherSubmissionAssessment = async (req, res) => {
         allowedExtensions: normalizeAllowedExtensions(submissionConfig.allowedExtensions),
         maxFileSizeMB,
         allowResubmission: submissionConfig.allowResubmission !== false,
+        eligibilityMode,
+        eligibleStudents,
         resourceTitle: normalizeResourceUrl(submissionConfig.resourceUrl)
           ? normalizeResourceTitle(submissionConfig.resourceTitle)
           : '',
@@ -661,6 +733,9 @@ const createTeacherSubmissionAssessment = async (req, res) => {
     });
   } catch (err) {
     console.error('createTeacherSubmissionAssessment error', err);
+    if (err?.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
     return res
       .status(500)
       .json({ message: 'Failed to create submission assessment.' });
@@ -1393,6 +1468,26 @@ const updateTeacherSubmissionAssessment = async (req, res) => {
           payload.allowResubmission !== false;
       }
 
+      if (
+        payload.eligibilityMode != null ||
+        payload.eligibleStudentIds != null ||
+        payload.eligibleStudents != null
+      ) {
+        const eligibilityMode = normalizeEligibilityMode(
+          payload.eligibilityMode ?? assessment.submissionConfig.eligibilityMode
+        );
+        const eligibleStudents = await resolveEligibleStudentIds(
+          courseId,
+          eligibilityMode,
+          payload.eligibleStudentIds ??
+            payload.eligibleStudents ??
+            assessment.submissionConfig.eligibleStudents
+        );
+
+        assessment.submissionConfig.eligibilityMode = eligibilityMode;
+        assessment.submissionConfig.eligibleStudents = eligibleStudents;
+      }
+
       if (payload.allowedExtensions != null) {
         assessment.submissionConfig.allowedExtensions = normalizeAllowedExtensions(
           payload.allowedExtensions
@@ -1412,12 +1507,37 @@ const updateTeacherSubmissionAssessment = async (req, res) => {
 
     await assessment.save();
 
+    if (
+      action === 'update' &&
+      normalizeEligibilityMode(assessment.submissionConfig?.eligibilityMode) ===
+        'selected'
+    ) {
+      const eligibleStudents = getEligibleStudentIds(assessment.submissionConfig);
+      await PublicSubmissionClaim.updateMany(
+        {
+          assessment: assessment._id,
+          active: true,
+          student: { $nin: eligibleStudents },
+        },
+        {
+          $set: {
+            active: false,
+            releasedAt: new Date(),
+            releasedBy: req.user.userId,
+          },
+        }
+      );
+    }
+
     return res.json({
       message: 'Submission assessment updated successfully.',
       assessment: normalizeSubmissionAssessment(assessment),
     });
   } catch (err) {
     console.error('updateTeacherSubmissionAssessment error', err);
+    if (err?.status) {
+      return res.status(err.status).json({ message: err.message });
+    }
     return res
       .status(500)
       .json({ message: 'Failed to update submission assessment.' });
@@ -1466,6 +1586,11 @@ const deleteTeacherSubmissionAssessment = async (req, res) => {
     }
 
     await LabSubmission.deleteMany({
+      course: courseId,
+      assessment: assessmentId,
+    });
+
+    await PublicSubmissionClaim.deleteMany({
       course: courseId,
       assessment: assessmentId,
     });
@@ -1535,6 +1660,23 @@ const getTeacherAssessmentSubmissions = async (req, res) => {
       .populate('student', 'name username')
       .sort({ submittedAt: -1 });
 
+    const fileHashGroups = new Map();
+    const contentHashGroups = new Map();
+
+    for (const submission of submissions) {
+      const fileHash = String(submission.fileSha256 || '').trim();
+      const contentHash = String(submission.contentSha256 || '').trim();
+
+      if (fileHash) {
+        if (!fileHashGroups.has(fileHash)) fileHashGroups.set(fileHash, []);
+        fileHashGroups.get(fileHash).push(submission);
+      }
+      if (contentHash) {
+        if (!contentHashGroups.has(contentHash)) contentHashGroups.set(contentHash, []);
+        contentHashGroups.get(contentHash).push(submission);
+      }
+    }
+
     const formattedSubmissions = await Promise.all(
       submissions.map(async (s) => {
         let downloadUrl = '';
@@ -1544,6 +1686,35 @@ const getTeacherAssessmentSubmissions = async (req, res) => {
         } catch (err) {
           console.error('Signed URL generation failed:', err.message);
         }
+
+        const exactMatches = s.fileSha256
+          ? (fileHashGroups.get(String(s.fileSha256)) || []).filter(
+              (item) => String(item._id) !== String(s._id)
+            )
+          : [];
+
+        const contentMatches = s.contentSha256
+          ? (contentHashGroups.get(String(s.contentSha256)) || []).filter(
+              (item) =>
+                String(item._id) !== String(s._id) &&
+                String(item.fileSha256 || '') !== String(s.fileSha256 || '')
+            )
+          : [];
+
+        const integrityMatches = [
+          ...exactMatches.map((item) => ({
+            submissionId: item._id.toString(),
+            roll: item.roll || item.student?.username || '-',
+            studentName: item.student?.name || '-',
+            matchType: 'exact-file',
+          })),
+          ...contentMatches.map((item) => ({
+            submissionId: item._id.toString(),
+            roll: item.roll || item.student?.username || '-',
+            studentName: item.student?.name || '-',
+            matchType: 'same-content',
+          })),
+        ];
 
         return {
           id: s._id.toString(),
@@ -1565,6 +1736,12 @@ const getTeacherAssessmentSubmissions = async (req, res) => {
           storageDeleted: !!s.storageDeleted,
           source: s.source || 'student-login',
           isPublicSubmission: s.source === 'public-link',
+          integrity: {
+            exactDuplicate: exactMatches.length > 0,
+            sameContent: contentMatches.length > 0,
+            fingerprintType: s.contentFingerprintType || '',
+            matches: integrityMatches,
+          },
         };
       })
     );
@@ -1938,6 +2115,10 @@ const getStudentSubmissionAssessments = async (req, res) => {
       course: { $in: courseIds },
       structureType: 'lab_submission',
       'submissionConfig.isVisibleToStudents': true,
+      $or: [
+        { 'submissionConfig.eligibilityMode': { $ne: 'selected' } },
+        { 'submissionConfig.eligibleStudents': studentId },
+      ],
     }).sort({ createdAt: -1, order: 1 });
 
     const submissions = await LabSubmission.find({
@@ -2019,6 +2200,10 @@ const getStudentCourseSubmissionAssessments = async (req, res) => {
       course: courseId,
       structureType: 'lab_submission',
       'submissionConfig.isVisibleToStudents': true,
+      $or: [
+        { 'submissionConfig.eligibilityMode': { $ne: 'selected' } },
+        { 'submissionConfig.eligibleStudents': studentId },
+      ],
     }).sort({ order: 1, createdAt: -1 });
 
     const submissions = await LabSubmission.find({
@@ -2371,6 +2556,12 @@ if (!isSubmissionCurrentlyOpen(cfg)) {
         .json({ message: 'You are not enrolled in this course.' });
     }
 
+    if (!isAssessmentEligibleForStudent(assessment, studentId)) {
+      return res.status(403).json({
+        message: 'This submission assessment is not assigned to you.',
+      });
+    }
+
     const existing = await LabSubmission.findOne({
       assessment: assessmentId,
       student: studentId,
@@ -2383,6 +2574,8 @@ if (!isSubmissionCurrentlyOpen(cfg)) {
         .status(400)
         .json({ message: 'Resubmission is disabled for this assessment.' });
     }
+
+    const integrity = await buildSubmissionIntegrity(file.buffer, file.originalname);
 
     const storagePath = buildSubmissionStoragePath({
       courseId: assessment.course.toString(),
@@ -2418,6 +2611,9 @@ if (!isSubmissionCurrentlyOpen(cfg)) {
       storageDeleted: false,
       source: 'student-login',
       publicSubmissionLink: null,
+      fileSha256: integrity.fileSha256 || '',
+      contentSha256: integrity.contentSha256 || '',
+      contentFingerprintType: integrity.contentFingerprintType || '',
     };
 
     let submission;

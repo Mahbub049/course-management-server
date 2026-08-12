@@ -188,6 +188,17 @@ const submissionConfigSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    eligibilityMode: {
+      type: String,
+      enum: ['all', 'selected'],
+      default: 'all',
+    },
+    eligibleStudents: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+      },
+    ],
     resourceTitle: {
       type: String,
       default: '',

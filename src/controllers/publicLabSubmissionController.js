@@ -7,6 +7,7 @@ const Course = require('../models/Course');
 const Enrollment = require('../models/Enrollment');
 const LabSubmission = require('../models/LabSubmission');
 const PublicSubmissionLink = require('../models/PublicSubmissionLink');
+const PublicSubmissionClaim = require('../models/PublicSubmissionClaim');
 const User = require('../models/User');
 
 const {
@@ -15,6 +16,7 @@ const {
   deleteSubmissionObject,
   createSubmissionSignedUrl,
 } = require('../utils/labSubmissionStorage');
+const { buildSubmissionIntegrity } = require('../utils/submissionIntegrity');
 
 const DEFAULT_ALLOWED_EXTENSIONS = [
   'pdf',
@@ -65,6 +67,24 @@ function normalizeAllowedExtensions(value) {
   const cleaned = value.map((item) => sanitizeExtension(item)).filter(Boolean);
   const unique = Array.from(new Set(cleaned));
   return unique.length ? unique : DEFAULT_ALLOWED_EXTENSIONS;
+}
+
+function isAssessmentEligibleForStudent(assessment, studentId) {
+  const cfg = assessment?.submissionConfig || {};
+  if (String(cfg.eligibilityMode || '').toLowerCase() !== 'selected') return true;
+
+  const targetId = String(studentId || '');
+  const selectedIds = Array.isArray(cfg.eligibleStudents)
+    ? cfg.eligibleStudents.map((id) => String(id || '')).filter(Boolean)
+    : [];
+
+  return selectedIds.includes(targetId);
+}
+
+function filterEligibleAssessments(assessments, studentId) {
+  return (Array.isArray(assessments) ? assessments : []).filter((assessment) =>
+    isAssessmentEligibleForStudent(assessment, studentId)
+  );
 }
 
 function getFileExtension(fileName = '') {
@@ -363,6 +383,360 @@ async function findStudentEnrollmentByRoll(courseId, roll) {
   };
 }
 
+
+function getPublicDeviceId(req) {
+  return String(
+    req?.body?.deviceId ||
+      req?.query?.deviceId ||
+      req?.headers?.['x-public-submission-device'] ||
+      ''
+  ).trim();
+}
+
+function isValidPublicDeviceId(value) {
+  return /^[A-Za-z0-9._:-]{20,200}$/.test(String(value || '').trim());
+}
+
+function hashPublicDeviceId(value) {
+  return crypto.createHash('sha256').update(String(value || '')).digest('hex');
+}
+
+function getRequestIp(req) {
+  const forwarded = String(req?.headers?.['x-forwarded-for'] || '')
+    .split(',')[0]
+    .trim();
+  return forwarded || req?.ip || req?.socket?.remoteAddress || '';
+}
+
+function getAssessmentLockExpiry(assessment) {
+  const dueDate = getValidDate(assessment?.submissionConfig?.dueDate);
+  return dueDate || null;
+}
+
+function isAssessmentOpenForClaim(assessment) {
+  return Boolean(assessment && isSubmissionCurrentlyOpen(assessment.submissionConfig || {}));
+}
+
+async function deactivateExpiredAssessmentClaims(assessmentId) {
+  if (!assessmentId) return;
+
+  await PublicSubmissionClaim.updateMany(
+    {
+      assessment: assessmentId,
+      active: true,
+      expiresAt: { $ne: null, $lte: new Date() },
+    },
+    {
+      $set: { active: false },
+    }
+  );
+}
+
+function isPublicSubmissionClaimLive(claim, nowValue = Date.now()) {
+  if (!claim?.active) return false;
+
+  const expiry = getValidDate(claim.expiresAt);
+  if (expiry && expiry.getTime() <= nowValue) return false;
+
+  // When the assessment is populated, respect a teacher/manual close as well.
+  // If it is not populated (for example after the public link selection changes),
+  // the saved server-side expiry remains the source of truth.
+  if (claim.assessment && claim.assessment.submissionConfig) {
+    return isAssessmentOpenForClaim(claim.assessment);
+  }
+
+  return true;
+}
+
+async function findLiveCourseDeviceClaims(courseId, deviceIdHash) {
+  const claims = await PublicSubmissionClaim.find({
+    course: courseId,
+    deviceIdHash,
+    active: true,
+  })
+    .populate('assessment', 'name submissionConfig')
+    .sort({ claimedAt: 1 });
+
+  return claims.filter((claim) => isPublicSubmissionClaimLive(claim));
+}
+
+async function findLiveCourseStudentClaims(courseId, studentId) {
+  const claims = await PublicSubmissionClaim.find({
+    course: courseId,
+    student: studentId,
+    active: true,
+  })
+    .populate('assessment', 'name submissionConfig')
+    .sort({ claimedAt: 1 });
+
+  return claims.filter((claim) => isPublicSubmissionClaimLive(claim));
+}
+
+async function ensureAssessmentClaim({ req, link, assessment, student, deviceId }) {
+  if (!isValidPublicDeviceId(deviceId)) {
+    const error = new Error('This browser could not be identified. Refresh the page and try again.');
+    error.status = 400;
+    error.code = 'DEVICE_ID_REQUIRED';
+    throw error;
+  }
+
+  if (!isAssessmentOpenForClaim(assessment)) return null;
+
+  // An assessment may be reused or reopened after an earlier deadline. Expired
+  // active rows must not block the new session or make a refreshed browser look unlocked.
+  await deactivateExpiredAssessmentClaims(assessment._id);
+
+  const deviceIdHash = hashPublicDeviceId(deviceId);
+  const assessmentId = assessment._id;
+  const courseId = link.course._id || link.course;
+
+  // A browser/PC remains owned by the same roll for the whole live submission
+  // window, even if the teacher changes the public-link token or switches to a
+  // different assessment that overlaps with the first one.
+  const [liveDeviceClaims, liveStudentClaims] = await Promise.all([
+    findLiveCourseDeviceClaims(courseId, deviceIdHash),
+    findLiveCourseStudentClaims(courseId, student._id),
+  ]);
+
+  const foreignDeviceClaim = liveDeviceClaims.find(
+    (claim) => String(claim.student) !== String(student._id)
+  );
+  if (foreignDeviceClaim) {
+    const error = new Error(
+      `This browser is already locked to roll ${foreignDeviceClaim.roll} until the current submission session ends.`
+    );
+    error.status = 409;
+    error.code = 'DEVICE_LOCKED';
+    error.lockedRoll = foreignDeviceClaim.roll;
+    throw error;
+  }
+
+  const foreignStudentClaim = liveStudentClaims.find(
+    (claim) => claim.deviceIdHash !== deviceIdHash
+  );
+  if (foreignStudentClaim) {
+    const error = new Error(
+      'This roll is already locked to another browser/device until the current submission session ends. Ask the teacher to release the lock if needed.'
+    );
+    error.status = 409;
+    error.code = 'ROLL_LOCKED';
+    throw error;
+  }
+
+  const deviceClaim = await PublicSubmissionClaim.findOne({
+    assessment: assessmentId,
+    deviceIdHash,
+    active: true,
+  });
+
+  if (deviceClaim && String(deviceClaim.student) !== String(student._id)) {
+    const error = new Error(
+      `This browser is already locked to roll ${deviceClaim.roll} for this submission session.`
+    );
+    error.status = 409;
+    error.code = 'DEVICE_LOCKED';
+    error.lockedRoll = deviceClaim.roll;
+    throw error;
+  }
+
+  const studentClaim = await PublicSubmissionClaim.findOne({
+    assessment: assessmentId,
+    student: student._id,
+    active: true,
+  });
+
+  if (studentClaim && studentClaim.deviceIdHash !== deviceIdHash) {
+    const error = new Error(
+      'This roll is already locked to another browser/device for this submission session. Ask the teacher to release the lock if the previous computer cannot be used.'
+    );
+    error.status = 409;
+    error.code = 'ROLL_LOCKED';
+    throw error;
+  }
+
+  if (deviceClaim) return deviceClaim;
+  if (studentClaim) return studentClaim;
+
+  try {
+    return await PublicSubmissionClaim.create({
+      publicSubmissionLink: link._id,
+      course: link.course._id || link.course,
+      assessment: assessmentId,
+      student: student._id,
+      roll: student.username || '',
+      deviceIdHash,
+      userAgent: String(req?.headers?.['user-agent'] || '').slice(0, 500),
+      ipAddress: String(getRequestIp(req) || '').slice(0, 120),
+      claimedAt: new Date(),
+      expiresAt: getAssessmentLockExpiry(assessment),
+      active: true,
+    });
+  } catch (err) {
+    if (err?.code !== 11000) throw err;
+
+    // A simultaneous request may have created the lock first. Re-check it and
+    // return a clear conflict rather than surfacing a database duplicate error.
+    const racedDeviceClaim = await PublicSubmissionClaim.findOne({
+      assessment: assessmentId,
+      deviceIdHash,
+      active: true,
+    });
+    if (racedDeviceClaim && String(racedDeviceClaim.student) === String(student._id)) {
+      return racedDeviceClaim;
+    }
+    if (racedDeviceClaim) {
+      const conflict = new Error(
+        `This browser is already locked to roll ${racedDeviceClaim.roll} for this submission session.`
+      );
+      conflict.status = 409;
+      conflict.code = 'DEVICE_LOCKED';
+      conflict.lockedRoll = racedDeviceClaim.roll;
+      throw conflict;
+    }
+
+    const racedStudentClaim = await PublicSubmissionClaim.findOne({
+      assessment: assessmentId,
+      student: student._id,
+      active: true,
+    });
+    if (racedStudentClaim && racedStudentClaim.deviceIdHash === deviceIdHash) {
+      return racedStudentClaim;
+    }
+
+    const conflict = new Error(
+      'This roll is already locked to another browser/device for this submission session.'
+    );
+    conflict.status = 409;
+    conflict.code = 'ROLL_LOCKED';
+    throw conflict;
+  }
+}
+
+async function ensureClaimsForOpenAssessments({ req, link, assessments, student, deviceId }) {
+  const openAssessments = assessments.filter(isAssessmentOpenForClaim);
+  const claims = [];
+
+  // Validate all existing conflicts before creating anything so a student does
+  // not end up with a partial set of locks when multiple tasks are open.
+  const deviceIdHash = hashPublicDeviceId(deviceId);
+  if (!isValidPublicDeviceId(deviceId)) {
+    const error = new Error('This browser could not be identified. Refresh the page and try again.');
+    error.status = 400;
+    error.code = 'DEVICE_ID_REQUIRED';
+    throw error;
+  }
+
+  for (const assessment of openAssessments) {
+    await deactivateExpiredAssessmentClaims(assessment._id);
+
+    const [deviceClaim, studentClaim] = await Promise.all([
+      PublicSubmissionClaim.findOne({ assessment: assessment._id, deviceIdHash, active: true }),
+      PublicSubmissionClaim.findOne({ assessment: assessment._id, student: student._id, active: true }),
+    ]);
+
+    if (deviceClaim && String(deviceClaim.student) !== String(student._id)) {
+      const error = new Error(
+        `This browser is already locked to roll ${deviceClaim.roll} until the current submission session ends.`
+      );
+      error.status = 409;
+      error.code = 'DEVICE_LOCKED';
+      error.lockedRoll = deviceClaim.roll;
+      throw error;
+    }
+
+    if (studentClaim && studentClaim.deviceIdHash !== deviceIdHash) {
+      const error = new Error(
+        'This roll is already locked to another browser/device until the current submission session ends. Ask the teacher to release the lock if needed.'
+      );
+      error.status = 409;
+      error.code = 'ROLL_LOCKED';
+      throw error;
+    }
+  }
+
+  // Claim only the session that ends first. This is important for exam slots
+  // that can overlap: verifying a Slot-1 student must not automatically reserve
+  // the same PC for a later Slot-2 assessment merely because Slot 2 is already
+  // visible. Uploading another assessment will create its own claim only when
+  // that student actually submits to it.
+  const sessionAssessment = [...openAssessments].sort((a, b) => {
+    const aDue = getValidDate(a?.submissionConfig?.dueDate)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+    const bDue = getValidDate(b?.submissionConfig?.dueDate)?.getTime() ?? Number.MAX_SAFE_INTEGER;
+    return aDue - bDue;
+  })[0];
+
+  if (sessionAssessment) {
+    const claim = await ensureAssessmentClaim({
+      req,
+      link,
+      assessment: sessionAssessment,
+      student,
+      deviceId,
+    });
+    if (claim) claims.push(claim);
+  }
+
+  return claims;
+}
+
+function normalizeDeviceLock(claims = [], assessments = []) {
+  if (!claims.length) return null;
+
+  const assessmentMap = new Map(assessments.map((item) => [String(item._id), item]));
+  const liveClaims = claims.filter((claim) => {
+    if (!claim?.active) return false;
+
+    const mappedAssessment = assessmentMap.get(String(claim.assessment?._id || claim.assessment));
+    if (mappedAssessment) return isAssessmentOpenForClaim(mappedAssessment);
+
+    return isPublicSubmissionClaimLive(claim);
+  });
+
+  if (!liveClaims.length) return null;
+
+  const dueDates = liveClaims
+    .map((claim) => {
+      const claimExpiry = getValidDate(claim.expiresAt);
+      if (claimExpiry) return claimExpiry;
+
+      const mappedAssessment = assessmentMap.get(String(claim.assessment?._id || claim.assessment));
+      return getValidDate(mappedAssessment?.submissionConfig?.dueDate);
+    })
+    .filter(Boolean)
+    .map((date) => date.getTime());
+
+  return {
+    locked: true,
+    claimedAt: new Date(
+      liveClaims.reduce((min, claim) => {
+        const value = getValidDate(claim.claimedAt)?.getTime() || Date.now();
+        return Math.min(min, value);
+      }, Number.MAX_SAFE_INTEGER)
+    ),
+    lockedUntil:
+      dueDates.length === liveClaims.length
+        ? new Date(Math.max(...dueDates))
+        : null,
+    assessmentIds: liveClaims.map((claim) =>
+      String(claim.assessment?._id || claim.assessment)
+    ),
+  };
+}
+
+async function buildStudentAssessmentResponse({ link, student, assessments }) {
+  const submissions = await LabSubmission.find({
+    course: link.course._id || link.course,
+    student: student._id,
+    assessment: { $in: assessments.map((item) => item._id) },
+  });
+
+  const submissionMap = Object.fromEntries(
+    submissions.map((item) => [String(item.assessment), item])
+  );
+
+  return attachSignedUrlsToAssessments(assessments, submissionMap);
+}
+
 async function removeFileIfExists(filePath) {
   try {
     if (filePath) await deleteSubmissionObject(filePath);
@@ -523,6 +897,119 @@ const updateTeacherPublicSubmissionLink = async (req, res) => {
   }
 };
 
+
+const getTeacherPublicSubmissionClaims = async (req, res) => {
+  try {
+    const { courseId } = req.params;
+    const course = await ensureTeacherCourse(courseId, req.user.userId);
+    if (!course) return res.status(404).json({ message: 'Course not found.' });
+
+    // Show every still-live lock for the course, not only locks tied to the
+    // assessment currently selected on /submit. This keeps Teacher Release
+    // available when the public portal is switched between exam slots.
+    const claims = await PublicSubmissionClaim.find({
+      course: course._id,
+      active: true,
+    })
+      .populate('assessment', 'name submissionConfig')
+      .populate('student', 'name username')
+      .sort({ claimedAt: -1 });
+
+    const groups = new Map();
+    for (const claim of claims) {
+      if (!isPublicSubmissionClaimLive(claim)) continue;
+
+      const key = `${claim.deviceIdHash}:${String(claim.student?._id || claim.student)}`;
+      const claimDueDate =
+        claim.expiresAt || claim.assessment?.submissionConfig?.dueDate || null;
+
+      if (!groups.has(key)) {
+        groups.set(key, {
+          id: claim._id.toString(),
+          student: {
+            id: claim.student?._id?.toString?.() || String(claim.student || ''),
+            name: claim.student?.name || '',
+            roll: claim.student?.username || claim.roll || '',
+          },
+          roll: claim.roll || claim.student?.username || '',
+          deviceRef: claim.deviceIdHash.slice(0, 8).toUpperCase(),
+          claimedAt: claim.claimedAt,
+          lockedUntil: claimDueDate,
+          hasOpenEndedLock: !claimDueDate,
+          assessments: [],
+        });
+      }
+
+      const group = groups.get(key);
+      group.assessments.push({
+        id: claim.assessment?._id?.toString?.() || String(claim.assessment || ''),
+        name: claim.assessment?.name || 'Submission',
+        dueDate: claimDueDate,
+      });
+
+      if (new Date(claim.claimedAt).getTime() < new Date(group.claimedAt).getTime()) {
+        group.claimedAt = claim.claimedAt;
+      }
+
+      if (!claimDueDate) {
+        group.hasOpenEndedLock = true;
+        group.lockedUntil = null;
+      } else if (!group.hasOpenEndedLock) {
+        if (!group.lockedUntil || new Date(claimDueDate) > new Date(group.lockedUntil)) {
+          group.lockedUntil = claimDueDate;
+        }
+      }
+    }
+
+    return res.json({ claims: Array.from(groups.values()) });
+  } catch (err) {
+    console.error('getTeacherPublicSubmissionClaims error', err);
+    return res.status(500).json({ message: 'Failed to load active submission device locks.' });
+  }
+};
+
+const releaseTeacherPublicSubmissionClaim = async (req, res) => {
+  try {
+    const { courseId, claimId } = req.params;
+    const course = await ensureTeacherCourse(courseId, req.user.userId);
+    if (!course) return res.status(404).json({ message: 'Course not found.' });
+
+    const claim = await PublicSubmissionClaim.findOne({
+      _id: claimId,
+      course: course._id,
+      active: true,
+    });
+
+    if (!claim) {
+      return res.status(404).json({ message: 'Active device lock not found.' });
+    }
+
+    const result = await PublicSubmissionClaim.updateMany(
+      {
+        course: course._id,
+        student: claim.student,
+        deviceIdHash: claim.deviceIdHash,
+        active: true,
+      },
+      {
+        $set: {
+          active: false,
+          releasedAt: new Date(),
+          releasedBy: req.user.userId,
+        },
+      }
+    );
+
+    return res.json({
+      message: 'Submission device lock released successfully.',
+      releasedCount: Number(result.modifiedCount || 0),
+    });
+  } catch (err) {
+    console.error('releaseTeacherPublicSubmissionClaim error', err);
+    return res.status(500).json({ message: 'Failed to release the submission device lock.' });
+  }
+};
+
 // ---------------- PUBLIC STUDENT ACCESS ----------------
 
 const getPublicSubmissionPortal = async (_req, res) => {
@@ -671,6 +1158,7 @@ const verifyPublicRoll = async (req, res) => {
   try {
     const { token } = req.params;
     const { roll } = req.body || {};
+    const deviceId = getPublicDeviceId(req);
 
     const link = await PublicSubmissionLink.findOne({ token }).populate('course');
 
@@ -694,17 +1182,30 @@ const verifyPublicRoll = async (req, res) => {
     }
 
     const assessments = await getSelectedAssessments(link, link.course._id);
-    const submissions = await LabSubmission.find({
-      course: link.course._id,
-      student: result.student._id,
-      assessment: { $in: assessments.map((item) => item._id) },
-    });
-
-    const submissionMap = Object.fromEntries(
-      submissions.map((item) => [String(item.assessment), item])
+    const eligibleAssessments = filterEligibleAssessments(
+      assessments,
+      result.student._id
     );
 
-    const assessmentRows = await attachSignedUrlsToAssessments(assessments, submissionMap);
+    if (!eligibleAssessments.length) {
+      return res.status(403).json({
+        message: 'No public submission assessment is assigned to this roll number.',
+      });
+    }
+
+    const claims = await ensureClaimsForOpenAssessments({
+      req,
+      link,
+      assessments: eligibleAssessments,
+      student: result.student,
+      deviceId,
+    });
+
+    const assessmentRows = await buildStudentAssessmentResponse({
+      link,
+      student: result.student,
+      assessments: eligibleAssessments,
+    });
 
     return res.json({
       student: {
@@ -712,11 +1213,90 @@ const verifyPublicRoll = async (req, res) => {
         name: result.student.name || '',
         roll: result.student.username || '',
       },
+      deviceLock: normalizeDeviceLock(claims, assessments),
       assessments: assessmentRows,
     });
   } catch (err) {
     console.error('verifyPublicRoll error', err);
-    return res.status(500).json({ message: 'Failed to verify roll number.' });
+    return res.status(err?.status || 500).json({
+      message: err?.status ? err.message : 'Failed to verify roll number.',
+      code: err?.code || undefined,
+      lockedRoll: err?.lockedRoll || undefined,
+    });
+  }
+};
+
+const getPublicDeviceSession = async (req, res) => {
+  try {
+    const { token } = req.params;
+    const deviceId = getPublicDeviceId(req);
+
+    if (!isValidPublicDeviceId(deviceId)) {
+      return res.json({ locked: false, released: false });
+    }
+
+    const link = await PublicSubmissionLink.findOne({ token }).populate('course');
+    if (!link || !link.course || link.course.archived === true || !link.isActive) {
+      return res.json({ locked: false, released: false });
+    }
+
+    const assessments = await getSelectedAssessments(link, link.course._id);
+    const deviceIdHash = hashPublicDeviceId(deviceId);
+
+    // Restore by COURSE + DEVICE, not by the current public-link record. The
+    // teacher can edit/recreate/switch the /submit link while an exam is active;
+    // that must not make an already-claimed PC look new after a refresh.
+    const allClaims = await PublicSubmissionClaim.find({
+      course: link.course._id,
+      deviceIdHash,
+      active: true,
+    })
+      .populate('assessment', 'name submissionConfig')
+      .sort({ claimedAt: 1 });
+
+    const claims = allClaims.filter((claim) => isPublicSubmissionClaimLive(claim));
+
+    if (!claims.length) {
+      const releasedClaim = await PublicSubmissionClaim.findOne({
+        course: link.course._id,
+        deviceIdHash,
+        active: false,
+        releasedAt: { $ne: null },
+      }).sort({ releasedAt: -1 });
+
+      return res.json({
+        locked: false,
+        released: Boolean(releasedClaim),
+        releasedAt: releasedClaim?.releasedAt || null,
+      });
+    }
+
+    // The oldest live claim owns the browser until that session ends. This also
+    // handles old data safely if multiple claims were accidentally created.
+    const canonicalClaim = claims[0];
+    const student = await User.findById(canonicalClaim.student);
+    if (!student) return res.json({ locked: false, released: false });
+
+    const eligibleAssessments = filterEligibleAssessments(assessments, student._id);
+    const assessmentRows = await buildStudentAssessmentResponse({
+      link,
+      student,
+      assessments: eligibleAssessments,
+    });
+
+    return res.json({
+      locked: true,
+      student: {
+        id: student._id.toString(),
+        name: student.name || '',
+        roll: student.username || canonicalClaim.roll || '',
+      },
+      deviceLock: normalizeDeviceLock(claims, eligibleAssessments),
+      assessments: assessmentRows,
+    });
+  } catch (err) {
+    console.error('getPublicDeviceSession error', err);
+    return res.status(500).json({ message: 'Failed to restore this browser submission session.' });
   }
 };
 
@@ -724,6 +1304,7 @@ const getPublicSubmittedFiles = async (req, res) => {
   try {
     const { token } = req.params;
     const { roll } = req.query || {};
+    const deviceId = getPublicDeviceId(req);
 
     const link = await PublicSubmissionLink.findOne({ token }).populate('course');
 
@@ -747,22 +1328,39 @@ const getPublicSubmittedFiles = async (req, res) => {
     }
 
     const assessments = await getSelectedAssessments(link, link.course._id);
-    const submissions = await LabSubmission.find({
-      course: link.course._id,
-      student: result.student._id,
-      assessment: { $in: assessments.map((item) => item._id) },
-    });
-
-    const submissionMap = Object.fromEntries(
-      submissions.map((item) => [String(item.assessment), item])
+    const eligibleAssessments = filterEligibleAssessments(
+      assessments,
+      result.student._id
     );
 
+    if (!eligibleAssessments.length) {
+      return res.status(403).json({
+        message: 'No public submission assessment is assigned to this roll number.',
+      });
+    }
+
+    await ensureClaimsForOpenAssessments({
+      req,
+      link,
+      assessments: eligibleAssessments,
+      student: result.student,
+      deviceId,
+    });
+
     return res.json({
-      assessments: await attachSignedUrlsToAssessments(assessments, submissionMap),
+      assessments: await buildStudentAssessmentResponse({
+        link,
+        student: result.student,
+        assessments: eligibleAssessments,
+      }),
     });
   } catch (err) {
     console.error('getPublicSubmittedFiles error', err);
-    return res.status(500).json({ message: 'Failed to load submitted files.' });
+    return res.status(err?.status || 500).json({
+      message: err?.status ? err.message : 'Failed to load submitted files.',
+      code: err?.code || undefined,
+      lockedRoll: err?.lockedRoll || undefined,
+    });
   }
 };
 
@@ -770,6 +1368,7 @@ const submitPublicAssessmentFile = async (req, res) => {
   try {
     const { token, assessmentId } = req.params;
     const { roll } = req.body || {};
+    const deviceId = getPublicDeviceId(req);
     const file = req.file;
 
     if (!file) {
@@ -814,6 +1413,12 @@ const submitPublicAssessmentFile = async (req, res) => {
 
     const cfg = assessment.submissionConfig || {};
 
+    if (!isAssessmentEligibleForStudent(assessment, result.student._id)) {
+      return res.status(403).json({
+        message: 'This submission assessment is not assigned to this roll number.',
+      });
+    }
+
     if (!isSubmissionCurrentlyOpen(cfg)) {
       return res.status(400).json({
         message: hasSubmissionDueDatePassed(cfg)
@@ -821,6 +1426,14 @@ const submitPublicAssessmentFile = async (req, res) => {
           : 'Submission is currently closed for this task.',
       });
     }
+
+    await ensureAssessmentClaim({
+      req,
+      link,
+      assessment,
+      student: result.student,
+      deviceId,
+    });
 
     const allowedExtensions = normalizeAllowedExtensions(cfg.allowedExtensions);
     const uploadedExt = getFileExtension(file.originalname);
@@ -850,6 +1463,8 @@ const submitPublicAssessmentFile = async (req, res) => {
     if (existing && !allowResubmission) {
       return res.status(400).json({ message: 'Resubmission is disabled for this assessment.' });
     }
+
+    const integrity = await buildSubmissionIntegrity(file.buffer, file.originalname);
 
     const storagePath = buildSubmissionStoragePath({
       courseId: assessment.course.toString(),
@@ -885,6 +1500,9 @@ const submitPublicAssessmentFile = async (req, res) => {
       storageDeleted: false,
       source: 'public-link',
       publicSubmissionLink: link._id,
+      fileSha256: integrity.fileSha256 || '',
+      contentSha256: integrity.contentSha256 || '',
+      contentFingerprintType: integrity.contentFingerprintType || '',
     };
 
     let submission;
@@ -922,16 +1540,23 @@ const submitPublicAssessmentFile = async (req, res) => {
     });
   } catch (err) {
     console.error('submitPublicAssessmentFile error', err);
-    return res.status(500).json({ message: 'Failed to submit file.' });
+    return res.status(err?.status || 500).json({
+      message: err?.status ? err.message : 'Failed to submit file.',
+      code: err?.code || undefined,
+      lockedRoll: err?.lockedRoll || undefined,
+    });
   }
 };
 
 module.exports = {
   getTeacherPublicSubmissionLink,
   updateTeacherPublicSubmissionLink,
+  getTeacherPublicSubmissionClaims,
+  releaseTeacherPublicSubmissionClaim,
   getPublicSubmissionPortal,
   getCurrentPublicSubmissionPage,
   getPublicSubmissionPage,
+  getPublicDeviceSession,
   verifyPublicRoll,
   getPublicSubmittedFiles,
   submitPublicAssessmentFile,

@@ -101,6 +101,24 @@ const labSubmissionSchema = new mongoose.Schema(
       ref: 'PublicSubmissionLink',
       default: null,
     },
+    fileSha256: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+    contentSha256: {
+      type: String,
+      default: '',
+      trim: true,
+      index: true,
+    },
+    contentFingerprintType: {
+      type: String,
+      enum: ['', 'normalized-text', 'office-content'],
+      default: '',
+      trim: true,
+    },
   },
   { timestamps: true }
 );
