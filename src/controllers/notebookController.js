@@ -9,6 +9,9 @@ const {
 } = require("../utils/notebookMarkSync");
 
 const DEFAULT_SETTINGS = {
+  groupWise: false,
+  groupMarkMode: "group",
+  feedbackEntryMode: "group",
   includeRoll: true,
   includeName: true,
   includeFeedback: true,
@@ -24,18 +27,21 @@ const DEFAULT_SETTINGS = {
       id: "mcq_1",
       label: "Marking Category",
       options: ["High", "Medium", "Low"],
+      entryMode: "group",
     },
   ],
   checkboxFields: [
     {
       id: "checkbox_1",
       label: "Completed",
+      entryMode: "group",
     },
   ],
   blankFields: [
     {
       id: "blank_1",
       label: "Marks",
+      entryMode: "group",
     },
   ],
 };
@@ -52,11 +58,13 @@ const cleanEditableString = (value, fallback = "") => {
   return String(value).trim();
 };
 
+const sanitizeEntryMode = (value, fallback = "group") =>
+  String(value || fallback).toLowerCase() === "individual" ? "individual" : "group";
+
 const cleanOptions = (options) => {
   if (!Array.isArray(options) || options.length === 0) return [...DEFAULT_SETTINGS.mcqOptions];
   return options.map((x) => cleanEditableString(x));
 };
-
 
 const blankColumnId = (field) => `blank:${field.id}`;
 const mcqColumnId = (field) => `mcq:${field.id}`;
@@ -105,6 +113,7 @@ const sanitizeMcqFields = (raw = {}) => {
       id,
       label: cleanEditableString(field?.label ?? field?.mcqLabel, `Category ${index + 1}`),
       options: cleanOptions(field?.options ?? field?.mcqOptions),
+      entryMode: sanitizeEntryMode(field?.entryMode, raw.groupMarkMode || "group"),
     };
   });
 };
@@ -125,6 +134,7 @@ const sanitizeBlankFields = (raw = {}) => {
     return {
       id,
       label: cleanEditableString(field?.label, `Blank Field ${index + 1}`),
+      entryMode: sanitizeEntryMode(field?.entryMode, raw.groupMarkMode || "group"),
     };
   });
 };
@@ -143,6 +153,7 @@ const sanitizeCheckboxFields = (raw = {}) => {
     return {
       id,
       label: cleanEditableString(field?.label, `Checkbox ${index + 1}`),
+      entryMode: sanitizeEntryMode(field?.entryMode, raw.groupMarkMode || "group"),
     };
   });
 };
@@ -154,6 +165,9 @@ const sanitizeSettings = (raw = {}) => {
   const firstField = mcqFields[0] || DEFAULT_SETTINGS.mcqFields[0];
 
   const settings = {
+    groupWise: raw.groupWise === undefined ? false : Boolean(raw.groupWise),
+    groupMarkMode: sanitizeEntryMode(raw.groupMarkMode, "group"),
+    feedbackEntryMode: sanitizeEntryMode(raw.feedbackEntryMode, raw.groupMarkMode || "group"),
     includeRoll: raw.includeRoll === undefined ? true : Boolean(raw.includeRoll),
     includeName: raw.includeName === undefined ? true : Boolean(raw.includeName),
     includeFeedback: raw.includeFeedback === undefined ? true : Boolean(raw.includeFeedback),
@@ -215,6 +229,52 @@ const sanitizeEvaluationRows = (rows = []) => {
     blankValues: sanitizeKeyValueMap(row.blankValues),
     feedback: typeof row.feedback === "string" ? row.feedback : "",
   }));
+};
+
+const sanitizeGroupRows = (rows = []) => {
+  if (!Array.isArray(rows)) return [];
+
+  const seenIds = new Set();
+  const assignedMembers = new Set();
+  return rows.map((row, index) => {
+    let id = cleanString(row?.id, `group_${index + 1}`);
+    if (seenIds.has(id)) id = `${id}_${index + 1}`;
+    seenIds.add(id);
+
+    const members = Array.isArray(row?.members)
+      ? row.members
+          .map((member) => ({
+            student: isValidObjectId(member?.student) ? member.student : null,
+            roll: cleanString(member?.roll),
+            name: cleanString(member?.name),
+            selectedOptions: sanitizeKeyValueMap(member?.selectedOptions),
+            checkboxValues: sanitizeBooleanMap(member?.checkboxValues),
+            blankValues: sanitizeKeyValueMap(member?.blankValues),
+            feedback: typeof member?.feedback === "string" ? member.feedback : "",
+          }))
+          .filter((member) => member.student || member.roll || member.name)
+          .filter((member) => {
+            const key = member.student
+              ? `student:${String(member.student)}`
+              : member.roll
+                ? `roll:${member.roll.toLowerCase()}`
+                : `name:${member.name.toLowerCase()}`;
+            if (assignedMembers.has(key)) return false;
+            assignedMembers.add(key);
+            return true;
+          })
+      : [];
+
+    return {
+      id,
+      groupName: cleanEditableString(row?.groupName, `Group ${index + 1}`),
+      members,
+      selectedOptions: sanitizeKeyValueMap(row?.selectedOptions),
+      checkboxValues: sanitizeBooleanMap(row?.checkboxValues),
+      blankValues: sanitizeKeyValueMap(row?.blankValues),
+      feedback: typeof row?.feedback === "string" ? row.feedback : "",
+    };
+  });
 };
 
 const formatCourse = (course) => {
@@ -346,6 +406,14 @@ const evaluationRowIdentity = (row = {}, fallbackCourseId = "") => {
   return courseId && studentKey ? `${courseId}::${studentKey}` : "";
 };
 
+const ensureMarkSyncEvaluation = (note) => {
+  if (note?.type !== "evaluation") {
+    const error = new Error("Marks Sync is available only for evaluation sheets.");
+    error.statusCode = 400;
+    throw error;
+  }
+};
+
 exports.getNotebookNotes = async (req, res) => {
   try {
     const teacherId = req.user.userId;
@@ -381,12 +449,15 @@ exports.createNotebookNote = async (req, res) => {
   try {
     const teacherId = req.user.userId;
     const type = req.body.type === "evaluation" ? "evaluation" : "simple";
+    const settings = sanitizeSettings(req.body.settings || {});
     const title = cleanString(
       req.body.title,
       type === "evaluation" ? "Evaluation Sheet" : "Simple Note"
     );
     const requestedScope =
-      type === "evaluation" && req.body.courseScope === "all" ? "all" : "single";
+      type === "evaluation" && !settings.groupWise && req.body.courseScope === "all"
+        ? "all"
+        : "single";
     const courseId = req.body.courseId || req.body.course || null;
 
     let course = null;
@@ -416,11 +487,12 @@ exports.createNotebookNote = async (req, res) => {
 
     if (type === "evaluation" && requestedScope === "single" && !course) {
       return res.status(400).json({
-        message: "Course is required for an evaluation sheet.",
+        message: settings.groupWise
+          ? "Course is required for a group-wise presentation sheet."
+          : "Course is required for an evaluation sheet.",
       });
     }
 
-    const settings = sanitizeSettings(req.body.settings || {});
     let evaluationRows = [];
     if (type === "evaluation") {
       evaluationRows =
@@ -441,6 +513,7 @@ exports.createNotebookNote = async (req, res) => {
       time: cleanString(req.body.time),
       settings,
       evaluationRows,
+      groupRows: settings.groupWise ? sanitizeGroupRows(req.body.groupRows || []) : [],
       content:
         type === "simple" && typeof req.body.content === "string"
           ? req.body.content
@@ -512,7 +585,13 @@ exports.updateNotebookNote = async (req, res) => {
     }
 
     if (req.body.settings !== undefined) {
-      note.settings = sanitizeSettings(req.body.settings);
+      const nextSettings = sanitizeSettings(req.body.settings);
+      if (nextSettings.groupWise && note.courseScope === "all") {
+        return res.status(400).json({
+          message: "Group-wise presentation sheets must be connected to one course.",
+        });
+      }
+      note.settings = nextSettings;
     }
 
     if (req.body.content !== undefined) {
@@ -523,8 +602,18 @@ exports.updateNotebookNote = async (req, res) => {
       note.evaluationRows = sanitizeEvaluationRows(req.body.evaluationRows);
     }
 
+    if (req.body.groupRows !== undefined) {
+      note.groupRows = sanitizeGroupRows(req.body.groupRows);
+    }
+
     if (note.type === "evaluation" && req.body.courseScope !== undefined) {
-      note.courseScope = req.body.courseScope === "all" ? "all" : "single";
+      const nextScope = req.body.courseScope === "all" ? "all" : "single";
+      if (note.settings?.groupWise && nextScope === "all") {
+        return res.status(400).json({
+          message: "Group-wise presentation sheets cannot use All Courses scope.",
+        });
+      }
+      note.courseScope = nextScope;
     }
     if (req.body.scopeSemester !== undefined) {
       note.scopeSemester = cleanString(req.body.scopeSemester);
@@ -553,6 +642,7 @@ exports.updateNotebookNote = async (req, res) => {
       note.courseScope = "single";
       note.scopeSemester = "";
       note.scopeYear = "";
+      note.groupRows = [];
     }
 
     await note.save();
@@ -580,7 +670,6 @@ exports.updateNotebookNote = async (req, res) => {
     return res.status(500).json({ message: "Failed to save notebook note." });
   }
 };
-
 
 exports.refreshNotebookStudents = async (req, res) => {
   try {
@@ -673,7 +762,6 @@ exports.refreshNotebookStudents = async (req, res) => {
   }
 };
 
-
 exports.getNotebookMarkSync = async (req, res) => {
   try {
     const teacherId = req.user.userId;
@@ -692,17 +780,12 @@ exports.getNotebookMarkSync = async (req, res) => {
       return res.status(404).json({ message: "Notebook note not found." });
     }
 
-    if (note.type !== "evaluation") {
-      return res.status(400).json({
-        message: "Marks Sync is available only for evaluation sheets.",
-      });
-    }
-
+    ensureMarkSyncEvaluation(note);
     const config = await getNotebookMarkSyncConfig(note);
     return res.json(config);
   } catch (err) {
     console.error("getNotebookMarkSync error", err);
-    return res.status(500).json({
+    return res.status(err?.statusCode || 500).json({
       message: err?.message || "Failed to load notebook marks sync.",
     });
   }
@@ -726,6 +809,7 @@ exports.saveNotebookMarkSync = async (req, res) => {
       return res.status(404).json({ message: "Notebook note not found." });
     }
 
+    ensureMarkSyncEvaluation(note);
     const mappings = await sanitizeAndValidateMappings(
       note,
       req.body?.mappings
@@ -771,6 +855,7 @@ exports.syncNotebookMarks = async (req, res) => {
       return res.status(404).json({ message: "Notebook note not found." });
     }
 
+    ensureMarkSyncEvaluation(note);
     const summary = await syncNotebookMappings(note);
     return res.json({
       message: summary.message,

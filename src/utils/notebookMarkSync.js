@@ -112,24 +112,42 @@ const getSubmissionTargetLocks = async (courseId) => {
   }));
 };
 
+const normalizeEntryMode = (value, fallback = 'group') =>
+  String(value || fallback).toLowerCase() === 'individual' ? 'individual' : 'group';
+
+const fieldEntryMode = (field, settings = {}) =>
+  normalizeEntryMode(field?.entryMode, settings.groupMarkMode || 'group');
+
+const feedbackEntryMode = (settings = {}) =>
+  normalizeEntryMode(settings.feedbackEntryMode, settings.groupMarkMode || 'group');
+
 const buildSourceOptions = (note) => {
   const settings = note?.settings || {};
   const blankFields = Array.isArray(settings.blankFields)
     ? settings.blankFields
     : [];
+  const groupSheet = Boolean(settings.groupWise);
 
   return [
-    ...blankFields.map((field, index) => ({
-      key: `blank:${String(field?.id || '')}`,
-      sourceType: 'blank',
-      sourceFieldId: String(field?.id || ''),
-      label: String(field?.label || `Blank Field ${index + 1}`),
-    })),
+    ...blankFields.map((field, index) => {
+      const label = String(field?.label || `Blank Field ${index + 1}`);
+      const scope = fieldEntryMode(field, settings) === 'individual'
+        ? 'Individual'
+        : 'Group-shared';
+      return {
+        key: `blank:${String(field?.id || '')}`,
+        sourceType: 'blank',
+        sourceFieldId: String(field?.id || ''),
+        label: groupSheet ? `${label} (${scope})` : label,
+      };
+    }),
     {
       key: 'total',
       sourceType: 'total',
       sourceFieldId: '',
-      label: 'Total (sum of all blank fields)',
+      label: groupSheet
+        ? 'Total (group-shared + individual numeric fields)'
+        : 'Total (sum of all blank fields)',
     },
   ];
 };
@@ -449,6 +467,61 @@ const getSourceValue = (note, row, mapping) => {
   return { valid: true, value: round2(value) };
 };
 
+
+const buildNotebookSyncRows = (note) => {
+  if (!note?.settings?.groupWise) {
+    return Array.isArray(note?.evaluationRows) ? note.evaluationRows : [];
+  }
+
+  const settings = note?.settings || {};
+  const groups = Array.isArray(note?.groupRows) ? note.groupRows : [];
+  const blankFields = Array.isArray(settings.blankFields) ? settings.blankFields : [];
+  const mcqFields = Array.isArray(settings.mcqFields) ? settings.mcqFields : [];
+  const checkboxFields = Array.isArray(settings.checkboxFields) ? settings.checkboxFields : [];
+
+  return groups.flatMap((group) => {
+    const members = Array.isArray(group?.members) ? group.members : [];
+    return members.map((member) => {
+      const blankValues = {};
+      blankFields.forEach((field) => {
+        const fieldId = String(field?.id || '');
+        blankValues[fieldId] = fieldEntryMode(field, settings) === 'individual'
+          ? member?.blankValues?.[fieldId] ?? ''
+          : group?.blankValues?.[fieldId] ?? '';
+      });
+
+      const selectedOptions = {};
+      mcqFields.forEach((field) => {
+        const fieldId = String(field?.id || '');
+        selectedOptions[fieldId] = fieldEntryMode(field, settings) === 'individual'
+          ? member?.selectedOptions?.[fieldId] ?? ''
+          : group?.selectedOptions?.[fieldId] ?? '';
+      });
+
+      const checkboxValues = {};
+      checkboxFields.forEach((field) => {
+        const fieldId = String(field?.id || '');
+        checkboxValues[fieldId] = fieldEntryMode(field, settings) === 'individual'
+          ? Boolean(member?.checkboxValues?.[fieldId])
+          : Boolean(group?.checkboxValues?.[fieldId]);
+      });
+
+      return {
+        student: member?.student || null,
+        roll: member?.roll || '',
+        name: member?.name || '',
+        groupName: group?.groupName || '',
+        blankValues,
+        selectedOptions,
+        checkboxValues,
+        feedback: feedbackEntryMode(settings) === 'individual'
+          ? member?.feedback || ''
+          : group?.feedback || '',
+      };
+    });
+  });
+};
+
 const syncNotebookMappings = async (note) => {
   const courseId = getNoteCourseId(note);
   const mappings = Array.isArray(note?.markSyncMappings)
@@ -487,13 +560,15 @@ const syncNotebookMappings = async (note) => {
     targets.map((assessment) => [String(assessment._id), assessment])
   );
   const rollMap = new Map();
+  const enrolledStudentIds = new Set();
   enrollments.forEach((enrollment) => {
     const roll = normalizeRoll(enrollment?.student?.username);
     const studentId = enrollment?.student?._id;
+    if (studentId) enrolledStudentIds.add(String(studentId));
     if (roll && studentId) rollMap.set(roll, String(studentId));
   });
 
-  const rows = Array.isArray(note.evaluationRows) ? note.evaluationRows : [];
+  const rows = buildNotebookSyncRows(note);
   const candidateEntries = [];
   const skippedDetails = [];
 
@@ -534,12 +609,17 @@ const syncNotebookMappings = async (note) => {
 
     rows.forEach((row) => {
       const roll = normalizeRoll(row?.roll);
-      const studentId = rollMap.get(roll);
+      const directStudentId = String(row?.student?._id || row?.student || '').trim();
+      const studentId =
+        directStudentId && enrolledStudentIds.has(directStudentId)
+          ? directStudentId
+          : rollMap.get(roll);
       if (!studentId) {
         skippedDetails.push({
           mappingId: String(mapping.id || ''),
           roll: row?.roll || '',
-          reason: 'No enrolled student matched this roll number.',
+          groupName: row?.groupName || '',
+          reason: 'No enrolled student matched this group member.',
         });
         return;
       }
@@ -686,13 +766,17 @@ const syncNotebookMappings = async (note) => {
 
   if (bulkOps.length) await Mark.bulkWrite(bulkOps);
 
+  const sourceLabel = note?.settings?.groupWise
+    ? 'group presentation sheet using per-field group/individual marking'
+    : 'evaluation sheet';
+
   return {
     updatedRecords: bulkOps.length,
     skippedRows: skippedDetails.length,
     skippedDetails: skippedDetails.slice(0, 30),
     message: `${bulkOps.length} student mark record${
       bulkOps.length === 1 ? '' : 's'
-    } synchronized from the evaluation sheet.`,
+    } synchronized from the ${sourceLabel}.`,
   };
 };
 

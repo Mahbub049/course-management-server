@@ -8,6 +8,7 @@ const mcqFieldSchema = new mongoose.Schema(
       type: [String],
       default: ["High", "Medium", "Low"],
     },
+    entryMode: { type: String, enum: ["group", "individual"] },
   },
   { _id: false }
 );
@@ -16,6 +17,7 @@ const blankFieldSchema = new mongoose.Schema(
   {
     id: { type: String, trim: true, default: "" },
     label: { type: String, trim: true, default: "Marks" },
+    entryMode: { type: String, enum: ["group", "individual"] },
   },
   { _id: false }
 );
@@ -24,12 +26,23 @@ const checkboxFieldSchema = new mongoose.Schema(
   {
     id: { type: String, trim: true, default: "" },
     label: { type: String, trim: true, default: "Completed" },
+    entryMode: { type: String, enum: ["group", "individual"] },
   },
   { _id: false }
 );
 
 const notebookSettingsSchema = new mongoose.Schema(
   {
+    groupWise: { type: Boolean, default: false },
+    groupMarkMode: {
+      type: String,
+      enum: ["group", "individual"],
+      default: "group",
+    },
+    feedbackEntryMode: {
+      type: String,
+      enum: ["group", "individual"],
+    },
     includeRoll: { type: Boolean, default: true },
     includeName: { type: Boolean, default: true },
     includeFeedback: { type: Boolean, default: true },
@@ -99,6 +112,35 @@ const evaluationRowSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const groupMemberSchema = new mongoose.Schema(
+  {
+    student: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    roll: { type: String, trim: true, default: "" },
+    name: { type: String, trim: true, default: "" },
+    selectedOptions: { type: mongoose.Schema.Types.Mixed, default: {} },
+    checkboxValues: { type: mongoose.Schema.Types.Mixed, default: {} },
+    blankValues: { type: mongoose.Schema.Types.Mixed, default: {} },
+    feedback: { type: String, default: "" },
+  },
+  { _id: false }
+);
+
+const groupRowSchema = new mongoose.Schema(
+  {
+    id: { type: String, trim: true, default: "" },
+    groupName: { type: String, trim: true, default: "" },
+    members: { type: [groupMemberSchema], default: [] },
+    selectedOptions: { type: mongoose.Schema.Types.Mixed, default: {} },
+    checkboxValues: { type: mongoose.Schema.Types.Mixed, default: {} },
+    blankValues: { type: mongoose.Schema.Types.Mixed, default: {} },
+    feedback: { type: String, default: "" },
+  },
+  { _id: false }
+);
 
 const markSyncMappingSchema = new mongoose.Schema(
   {
@@ -173,7 +215,10 @@ const notebookNoteSchema = new mongoose.Schema(
       type: [evaluationRowSchema],
       default: [],
     },
-
+    groupRows: {
+      type: [groupRowSchema],
+      default: [],
+    },
     markSyncMappings: {
       type: [markSyncMappingSchema],
       default: [],
