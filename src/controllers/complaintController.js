@@ -1,6 +1,19 @@
 // server/src/controllers/complaintController.js
 
 const Complaint = require("../models/Complaint");
+
+const LEGACY_COMPLAINT_CLOSED_MESSAGE =
+  "Complaint submission is currently closed by the course teacher.";
+const DEFAULT_ISSUE_CLOSED_MESSAGE =
+  "Issue submission is currently closed by the course teacher.";
+
+const normalizeIssueClosedMessage = (value) => {
+  const message = String(value || "").trim();
+  if (!message || message === LEGACY_COMPLAINT_CLOSED_MESSAGE) {
+    return DEFAULT_ISSUE_CLOSED_MESSAGE;
+  }
+  return message;
+};
 const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const Assessment = require("../models/Assessment");
@@ -53,9 +66,9 @@ const createStudentComplaint = async (req, res) => {
 
     if (courseDoc?.complaintSettings?.allowStudentComplaints === false) {
       return res.status(403).json({
-        message:
-          courseDoc.complaintSettings.closedMessage ||
-          "Complaint submission is currently closed by the course teacher.",
+        message: normalizeIssueClosedMessage(
+          courseDoc.complaintSettings.closedMessage
+        ),
       });
     }
 
@@ -82,7 +95,7 @@ const createStudentComplaint = async (req, res) => {
       if (!isValidYMD(d) || !p || p < 1) {
         return res.status(400).json({
           message:
-            "attendanceRef.date (YYYY-MM-DD) and attendanceRef.period (>=1) are required for attendance complaints",
+            "attendanceRef.date (YYYY-MM-DD) and attendanceRef.period (>=1) are required for attendance issues",
         });
       }
 
@@ -101,7 +114,7 @@ const createStudentComplaint = async (req, res) => {
         return res.status(409).json({
           code: "DUPLICATE_ATTENDANCE_COMPLAINT",
           message:
-            "You have already submitted an attendance complaint for this date and period.",
+            "You have already submitted an attendance issue for this date and period.",
           existingComplaint: {
             id: existingAttendanceComplaint._id,
             status: existingAttendanceComplaint.status,
@@ -164,7 +177,7 @@ const createStudentComplaint = async (req, res) => {
       return res.status(409).json({
         code: "DUPLICATE_ATTENDANCE_COMPLAINT",
         message:
-          "You have already submitted an attendance complaint for this date and period.",
+          "You have already submitted an attendance issue for this date and period.",
       });
     }
 
@@ -245,7 +258,7 @@ const replyToComplaint = async (req, res) => {
     const { reply, status } = req.body;
 
     const complaint = await Complaint.findById(id).populate("course", "createdBy code title");
-    if (!complaint) return res.status(404).json({ message: "Complaint not found" });
+    if (!complaint) return res.status(404).json({ message: "Issue not found" });
 
     // Authorization: either complaint.teacher matches OR teacher owns the course
     const complaintTeacherMatch =
@@ -257,7 +270,7 @@ const replyToComplaint = async (req, res) => {
       complaint.course.createdBy.toString() === teacherId;
 
     if (!complaintTeacherMatch && !courseOwnerMatch) {
-      return res.status(403).json({ message: "Not allowed to update this complaint" });
+      return res.status(403).json({ message: "Not allowed to update this issue" });
     }
 
     if (reply !== undefined) complaint.reply = reply;
@@ -294,7 +307,7 @@ const resolveAttendanceComplaint = async (req, res) => {
       .populate("course", "createdBy code title");
 
     if (!complaint) {
-      return res.status(404).json({ message: "Complaint not found" });
+      return res.status(404).json({ message: "Issue not found" });
     }
 
     const complaintTeacherMatch =
@@ -306,15 +319,15 @@ const resolveAttendanceComplaint = async (req, res) => {
       complaint.course.createdBy.toString() === teacherId;
 
     if (!complaintTeacherMatch && !courseOwnerMatch) {
-      return res.status(403).json({ message: "Not allowed to update this complaint" });
+      return res.status(403).json({ message: "Not allowed to update this issue" });
     }
 
     if (complaint.category !== "attendance") {
-      return res.status(400).json({ message: "This complaint is not an attendance complaint" });
+      return res.status(400).json({ message: "This issue is not an attendance issue" });
     }
 
     if (!complaint.attendanceRef?.date || !complaint.attendanceRef?.period) {
-      return res.status(400).json({ message: "Attendance date/period missing in complaint" });
+      return res.status(400).json({ message: "Attendance date/period missing in issue" });
     }
 
     const roll = String(complaint.student?.username || "").trim();
@@ -363,7 +376,7 @@ const resolveAttendanceComplaint = async (req, res) => {
       .populate("assessment", "name");
 
     res.json({
-      message: "Attendance updated and complaint resolved successfully",
+      message: "Attendance updated and issue resolved successfully",
       complaint: populated,
     });
   } catch (err) {

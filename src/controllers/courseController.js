@@ -82,19 +82,30 @@ const getCtWeightLimitMessage = (courseType = 'theory', maxWeight) => {
     : `CT + Assignment + Attendance cannot cross 30. For theory courses, CT weight cannot be more than ${maxWeight}.`;
 };
 
+const LEGACY_COMPLAINT_CLOSED_MESSAGE =
+  "Complaint submission is currently closed by the course teacher.";
+const DEFAULT_ISSUE_CLOSED_MESSAGE =
+  "Issue submission is currently closed by the course teacher.";
+
+const normalizeIssueClosedMessage = (value) => {
+  const message = String(value || "").trim();
+  if (!message || message === LEGACY_COMPLAINT_CLOSED_MESSAGE) {
+    return DEFAULT_ISSUE_CLOSED_MESSAGE;
+  }
+  return message;
+};
+
 const sanitizeComplaintSettings = (raw = {}, existing = {}) => {
   const allowStudentComplaints =
     raw?.allowStudentComplaints === undefined
       ? existing?.allowStudentComplaints !== false
       : !(raw?.allowStudentComplaints === false || raw?.allowStudentComplaints === "false");
 
-  const fallbackMessage =
-    existing?.closedMessage ||
-    "Complaint submission is currently closed by the course teacher.";
+  const fallbackMessage = normalizeIssueClosedMessage(existing?.closedMessage);
 
   const closedMessage =
     typeof raw?.closedMessage === "string" && raw.closedMessage.trim()
-      ? raw.closedMessage.trim()
+      ? normalizeIssueClosedMessage(raw.closedMessage)
       : fallbackMessage;
 
   return {
@@ -107,9 +118,9 @@ const sanitizeComplaintSettings = (raw = {}, existing = {}) => {
 const formatComplaintSettings = (course) => ({
   allowStudentComplaints:
     course?.complaintSettings?.allowStudentComplaints !== false,
-  closedMessage:
-    course?.complaintSettings?.closedMessage ||
-    "Complaint submission is currently closed by the course teacher.",
+  closedMessage: normalizeIssueClosedMessage(
+    course?.complaintSettings?.closedMessage
+  ),
   updatedAt: course?.complaintSettings?.updatedAt || null,
 });
 

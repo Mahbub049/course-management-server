@@ -37,7 +37,7 @@ const complaintSettingsSchema = new mongoose.Schema(
     closedMessage: {
       type: String,
       trim: true,
-      default: "Complaint submission is currently closed by the course teacher.",
+      default: "Issue submission is currently closed by the course teacher.",
     },
     updatedAt: {
       type: Date,
