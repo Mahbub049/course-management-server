@@ -43,6 +43,14 @@ const getStructuredLabPeriod = (assessment) => {
     : 'final';
 };
 
+const isMidAssessment = (assessment) => {
+  const name = lower(assessment?.name);
+  if (assessment?.structureType === 'lab_final') {
+    return getStructuredLabPeriod(assessment) === 'mid';
+  }
+  return name.includes('mid') && !name.includes('final');
+};
+
 const isFinalAssessment = (assessment) => {
   const name = lower(assessment?.name);
   if (assessment?.structureType === 'lab_final') {
@@ -263,7 +271,7 @@ const computeSummaryForStudent = (
   const hasFinalIncomplete = assessmentList.some((assessment) => {
     const assessmentId = assessment._id.toString();
     return (
-      isFinalAssessment(assessment) &&
+      (isMidAssessment(assessment) || isFinalAssessment(assessment)) &&
       isIncompleteMark(markDocsByAssessment[assessmentId])
     );
   });
