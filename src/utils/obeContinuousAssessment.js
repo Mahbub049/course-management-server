@@ -67,6 +67,8 @@ const normalizeCtPolicy = (course = {}) => {
         : raw.mode === 'best_one_scaled'
           ? 1
           : 2,
+    totalWeight:
+      Number(raw.totalWeight) >= 0 ? Number(raw.totalWeight) : 15,
     manualSelectedAssessmentIds: Array.isArray(raw.manualSelectedAssessmentIds)
       ? raw.manualSelectedAssessmentIds.map(String)
       : [],
@@ -171,6 +173,12 @@ const buildContinuousAssessmentData = ({
 } = {}) => {
   const courseType = getCourseType(course);
   const isLabCourse = courseType === 'lab';
+  const ctTargetWeight = courseType === 'hybrid'
+    ? Number(normalizeCtPolicy(course).totalWeight || 0)
+    : 15;
+  const assignmentTargetWeight = courseType === 'hybrid'
+    ? Math.max(0, 25 - ctTargetWeight)
+    : 10;
 
   const headers = isLabCourse
     ? [
@@ -198,13 +206,13 @@ const buildContinuousAssessmentData = ({
           key: 'ct',
           label: 'CT',
           assessmentName: 'Class Test',
-          maxMarks: 15,
+          maxMarks: ctTargetWeight,
         },
         {
           key: 'assignment',
           label: 'ASM',
           assessmentName: 'Assignment',
-          maxMarks: 10,
+          maxMarks: assignmentTargetWeight,
         },
       ];
 
@@ -290,33 +298,34 @@ const buildContinuousAssessmentData = ({
         assessment
       ),
     }));
-    const ct = computeCtContribution(course, ctEntries, 15);
+    const ct = computeCtContribution(course, ctEntries, ctTargetWeight);
 
     let assignment = 0;
     if (assignmentAssessment && presentationAssessment) {
+      const eachWeight = assignmentTargetWeight / 2;
       assignment =
         percentageForMark(
           studentMarks.get(stringId(assignmentAssessment)),
           assignmentAssessment
         ) *
-          5 +
+          eachWeight +
         percentageForMark(
           studentMarks.get(stringId(presentationAssessment)),
           presentationAssessment
         ) *
-          5;
+          eachWeight;
     } else if (assignmentAssessment) {
       assignment =
         percentageForMark(
           studentMarks.get(stringId(assignmentAssessment)),
           assignmentAssessment
-        ) * 10;
+        ) * assignmentTargetWeight;
     } else if (presentationAssessment) {
       assignment =
         percentageForMark(
           studentMarks.get(stringId(presentationAssessment)),
           presentationAssessment
-        ) * 10;
+        ) * assignmentTargetWeight;
     }
 
     const normalized = {

@@ -402,6 +402,7 @@ const computeSummaryForStudent = (
     const theoryFinalAssessment = findTheoryFinalAssessment(assessmentList);
     const labFinalAssessment = findLabFinalAssessment(assessmentList);
     const assignmentAssessment = findAssignmentAssessment(assessmentList);
+    const presentationAssessment = findPresentationAssessment(assessmentList);
     const attendanceAssessment = findAttendanceAssessment(assessmentList);
 
     const ctNow = computeCtContributionByPolicy(course, ctEntriesNow);
@@ -421,8 +422,20 @@ const computeSummaryForStudent = (
     const labFinalNow = getPct(labFinalAssessment) * 10;
     const labFinalFull = getExistingFull(labFinalAssessment, 10);
 
-    const assignmentNow = getPct(assignmentAssessment) * assignmentWeight;
-    const assignmentFull = getExistingFull(assignmentAssessment, assignmentWeight);
+    let assignmentNow = 0;
+    let assignmentFull = 0;
+
+    if (assignmentAssessment && presentationAssessment) {
+      const eachWeight = assignmentWeight / 2;
+      assignmentNow =
+        getPct(assignmentAssessment) * eachWeight +
+        getPct(presentationAssessment) * eachWeight;
+      assignmentFull = assignmentWeight;
+    } else {
+      const singlePracticeAssessment = assignmentAssessment || presentationAssessment;
+      assignmentNow = getPct(singlePracticeAssessment) * assignmentWeight;
+      assignmentFull = getExistingFull(singlePracticeAssessment, assignmentWeight);
+    }
 
     const attNow = getPct(attendanceAssessment) * 5;
     const attFull = getExistingFull(attendanceAssessment, 5);
