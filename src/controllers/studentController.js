@@ -556,6 +556,7 @@ const computeSummaryForStudent = (
     ctFull + midFull + finalFull + attFull + assignPresFull,
     {
       ctMain: round2(roundPolicyTotal(ctNow)),
+      assignmentMain: round2(roundPolicyTotal(assignPresNow)),
     }
   );
 };
