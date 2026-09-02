@@ -72,9 +72,14 @@ const sanitizeClassTestPolicy = (raw = {}) => {
   };
 };
 
-const getMaxCtWeight = (courseType = 'theory') => {
-  return String(courseType || 'theory').toLowerCase() === 'hybrid' ? 25 : 15;
-};
+const sanitizeAssignmentPolicy = (raw = {}) => ({
+  mode: raw?.mode === 'proportional_full_marks' ? 'proportional_full_marks' : 'equal_parts_scaled',
+  totalWeight: Number.isFinite(Number(raw?.totalWeight)) && Number(raw.totalWeight) >= 0
+    ? Number(raw.totalWeight)
+    : 10,
+});
+
+const getMaxCtWeight = () => 15;
 
 const getCtWeightLimitMessage = (courseType = 'theory', maxWeight) => {
   return String(courseType || 'theory').toLowerCase() === 'hybrid'
@@ -285,6 +290,7 @@ const updateCourse = async (req, res) => {
       courseType,
       archived,
       classTestPolicy,
+      assignmentPolicy,
       projectFeature,
       complaintSettings,
     } = req.body;
@@ -356,6 +362,10 @@ const updateCourse = async (req, res) => {
       }
 
       update.classTestPolicy = sanitizedPolicy;
+    }
+
+    if (assignmentPolicy !== undefined) {
+      update.assignmentPolicy = sanitizeAssignmentPolicy(assignmentPolicy);
     }
 
     if (projectFeature !== undefined) {

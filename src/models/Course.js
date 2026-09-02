@@ -97,6 +97,19 @@ const courseSchema = new mongoose.Schema(
       default: () => ({}),
     },
 
+    assignmentPolicy: {
+      mode: {
+        type: String,
+        enum: ["equal_parts_scaled", "proportional_full_marks"],
+        default: "equal_parts_scaled",
+      },
+      totalWeight: {
+        type: Number,
+        default: 10,
+        min: 0,
+      },
+    },
+
     classTestPolicy: {
       mode: {
         type: String,

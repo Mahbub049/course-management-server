@@ -4,6 +4,11 @@ const ObeAssessmentBlueprint = require('../models/ObeAssessmentBlueprint');
 const ObeStudentMark = require('../models/ObeStudentMark');
 const { round2 } = require('../utils/obeCalculation');
 
+const isHalfStepMark = (value) => {
+  const n = Number(value);
+  return Number.isFinite(n) && Math.abs(n * 2 - Math.round(n * 2)) < 1e-9;
+};
+
 const findTeacherCourse = async (courseId, teacherId) => {
   return Course.findOne({ _id: courseId, createdBy: teacherId });
 };
@@ -110,15 +115,23 @@ const saveObeMarks = async (req, res) => {
       }
 
       const itemMap = new Map((blueprint.items || []).map((item) => [item.key, item]));
+      const requestedStatus = ['absent', 'incomplete'].includes(record?.status) && ['mid', 'final'].includes(String(blueprint.assessmentType || '').toLowerCase())
+        ? record.status
+        : 'present';
       const normalizedEntries = [];
       let totalMarks = 0;
 
       for (const item of blueprint.items || []) {
         const matching = (Array.isArray(record.entries) ? record.entries : []).find((entry) => entry?.itemKey === item.key);
-        const numeric = Number(matching?.obtainedMarks ?? 0);
+        const numeric = requestedStatus === 'present' ? Number(matching?.obtainedMarks ?? 0) : 0;
         if (!Number.isFinite(numeric) || numeric < 0 || numeric > Number(item.marks || 0)) {
           return res.status(400).json({
             message: `Invalid obtained marks for ${blueprint.assessmentName} - ${item.label}.`,
+          });
+        }
+        if (!isHalfStepMark(numeric)) {
+          return res.status(400).json({
+            message: `Only whole or .5 marks are allowed for ${blueprint.assessmentName} - ${item.label}.`,
           });
         }
         const rounded = round2(numeric);
@@ -139,6 +152,7 @@ const saveObeMarks = async (req, res) => {
               course: courseId,
               student: studentId,
               blueprint: blueprintId,
+              status: requestedStatus,
               entries: normalizedEntries,
               totalMarks,
             },

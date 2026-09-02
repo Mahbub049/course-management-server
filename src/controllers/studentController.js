@@ -254,10 +254,7 @@ const getExistingFull = (assessment, targetFullMarks) => {
   return Number(assessment?.fullMarks || 0) > 0 ? Number(targetFullMarks || 0) : 0;
 };
 
-const getHybridTheoryPracticeWeight = (course) => {
-  const ctWeight = Number(normalizeCtPolicy(course).totalWeight || 0);
-  return Math.max(0, 25 - ctWeight);
-};
+const getHybridTheoryPracticeWeight = (course) => Number(course?.assignmentPolicy?.totalWeight ?? 10);
 
 const computeSummaryForStudent = (
   course,
@@ -434,10 +431,15 @@ const computeSummaryForStudent = (
     let assignmentFull = 0;
 
     if (assignmentAssessment && presentationAssessment) {
-      const eachWeight = assignmentWeight / 2;
+      const proportional = course?.assignmentPolicy?.mode === "proportional_full_marks";
+      const fullTotal = Number(assignmentAssessment.fullMarks || 0) + Number(presentationAssessment.fullMarks || 0);
+      const assignmentPartWeight = proportional && fullTotal > 0
+        ? assignmentWeight * Number(assignmentAssessment.fullMarks || 0) / fullTotal
+        : assignmentWeight / 2;
+      const presentationPartWeight = assignmentWeight - assignmentPartWeight;
       assignmentNow =
-        getPct(assignmentAssessment) * eachWeight +
-        getPct(presentationAssessment) * eachWeight;
+        getPct(assignmentAssessment) * assignmentPartWeight +
+        getPct(presentationAssessment) * presentationPartWeight;
       assignmentFull = assignmentWeight;
     } else {
       const singlePracticeAssessment = assignmentAssessment || presentationAssessment;

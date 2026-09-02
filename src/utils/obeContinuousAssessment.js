@@ -173,12 +173,8 @@ const buildContinuousAssessmentData = ({
 } = {}) => {
   const courseType = getCourseType(course);
   const isLabCourse = courseType === 'lab';
-  const ctTargetWeight = courseType === 'hybrid'
-    ? Number(normalizeCtPolicy(course).totalWeight || 0)
-    : 15;
-  const assignmentTargetWeight = courseType === 'hybrid'
-    ? Math.max(0, 25 - ctTargetWeight)
-    : 10;
+  const ctTargetWeight = Number(normalizeCtPolicy(course).totalWeight || 15);
+  const assignmentTargetWeight = Number(course?.assignmentPolicy?.totalWeight ?? 10);
 
   const headers = isLabCourse
     ? [
@@ -302,18 +298,15 @@ const buildContinuousAssessmentData = ({
 
     let assignment = 0;
     if (assignmentAssessment && presentationAssessment) {
-      const eachWeight = assignmentTargetWeight / 2;
+      const proportional = course?.assignmentPolicy?.mode === 'proportional_full_marks';
+      const fullTotal = Number(assignmentAssessment.fullMarks || 0) + Number(presentationAssessment.fullMarks || 0);
+      const assignmentWeight = proportional && fullTotal > 0
+        ? assignmentTargetWeight * Number(assignmentAssessment.fullMarks || 0) / fullTotal
+        : assignmentTargetWeight / 2;
+      const presentationWeight = assignmentTargetWeight - assignmentWeight;
       assignment =
-        percentageForMark(
-          studentMarks.get(stringId(assignmentAssessment)),
-          assignmentAssessment
-        ) *
-          eachWeight +
-        percentageForMark(
-          studentMarks.get(stringId(presentationAssessment)),
-          presentationAssessment
-        ) *
-          eachWeight;
+        percentageForMark(studentMarks.get(stringId(assignmentAssessment)), assignmentAssessment) * assignmentWeight +
+        percentageForMark(studentMarks.get(stringId(presentationAssessment)), presentationAssessment) * presentationWeight;
     } else if (assignmentAssessment) {
       assignment =
         percentageForMark(

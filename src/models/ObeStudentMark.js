@@ -36,6 +36,11 @@ const obeStudentMarkSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    status: {
+      type: String,
+      enum: ['present', 'absent', 'incomplete'],
+      default: 'present',
+    },
     entries: {
       type: [obeStudentMarkEntrySchema],
       default: [],
