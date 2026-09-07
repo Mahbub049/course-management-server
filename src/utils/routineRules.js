@@ -241,7 +241,12 @@ function normalizeEntries(entries, days, workingDays) {
         return;
       }
       const oldId = reverseLegacy[slot.id];
-      result[day][slot.id] = normalizeEntry(raw?.[day]?.[slot.id] || (oldId ? raw?.[day]?.[oldId] : null));
+      // Friday follows only the dedicated Evening timetable. Silently drop
+      // legacy data stored in regular Day slots so old records cannot keep an
+      // invalid Friday placement alive after the rule is enforced.
+      result[day][slot.id] = isSlotAvailableForDay(slot, day)
+        ? normalizeEntry(raw?.[day]?.[slot.id] || (oldId ? raw?.[day]?.[oldId] : null))
+        : null;
     });
   });
 
@@ -290,8 +295,12 @@ function buildCounsellingSlots(entries, workingDays) {
 function isSlotAvailableForDay(slotOrId, day) {
   const slot = typeof slotOrId === "string" ? SLOT_MAP[slotOrId] : slotOrId;
   if (!slot) return false;
+
+  // Friday uses the separate Evening timetable. Regular Day slots from
+  // 08:15-09:45 through 04:15-05:45 are unavailable on Friday.
+  if (day === "Fri") return slot.shift === "Evening";
+
   if (slot.shift !== "Evening") return true;
-  if (day === "Fri") return true;
   return Number(slot.sequenceOrder) >= 7;
 }
 
@@ -356,7 +365,7 @@ function validateRoutine({ days, workingDays, entries, semester, year, rooms }) 
       if (!workingSet.has(day)) blockingErrors.push(`${day} is an off day and cannot contain activities.`);
       if (entry.type !== "CLASS") perDay[entry.type] = (perDay[entry.type] || 0) + 1;
       if (!isSlotAvailableForDay(slot, day)) {
-        blockingErrors.push(`${slot.label} is not an available Evening slot on ${day}.`);
+        blockingErrors.push(`${slot.label} is not available on ${day}.`);
       }
     });
 

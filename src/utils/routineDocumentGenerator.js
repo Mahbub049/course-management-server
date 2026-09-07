@@ -15,6 +15,64 @@ const NAMEPLATE_TEMPLATE = path.join(TEMPLATE_DIR, "FacultyNameplateTemplate.doc
 
 const DAY_LABELS = Object.fromEntries(OFFICIAL_DAYS.map((item) => [item.id, item.label]));
 const SLOT_MAP = Object.fromEntries(OFFICIAL_TIME_SLOTS.map((item) => [item.id, item]));
+
+// Friday is printed on its own time-header row in the official routine. The
+// Friday row uses the standard Evening periods, while keeping the saved slot
+// IDs unchanged so the builder/validation logic stays consistent.
+const FRIDAY_ROUTINE_COLUMNS = [
+  { kind: "slot", id: "eve_0800_0915", label: "8:00-9:15" },
+  { kind: "slot", id: "eve_0915_1030", label: "9:15-10:30" },
+  { kind: "slot", id: "eve_1030_1145", label: "10:30-11:45" },
+  { kind: "slot", id: "eve_1145_1300", label: "11:45-1:00" },
+  // Friday has a longer prayer/lunch break than the regular day routine.
+  // It is display-only: there is intentionally no editable/saved class slot
+  // between 1:00 PM and 3:15 PM.
+  { kind: "lunch", id: "friday_prayer_lunch", label: "1:00-3:15" },
+  { kind: "slot", id: "eve_1515_1630", label: "3:15-4:30" },
+  { kind: "slot", id: "eve_1630_1745", label: "4:30-5:45" },
+  { kind: "slot", id: "eve_1745_1900", label: "5:45-7:00" },
+  { kind: "slot", id: "eve_1900_2015", label: "7:00-8:15" },
+  { kind: "slot", id: "eve_2015_2130", label: "8:15-9:30" },
+];
+
+function getFridayDisplayColumns(routine, targetBeforeLunchCount) {
+  const lunchIndex = FRIDAY_ROUTINE_COLUMNS.findIndex((column) => column.kind === "lunch");
+  const beforeLunch = FRIDAY_ROUTINE_COLUMNS.slice(0, lunchIndex);
+  const lunch = FRIDAY_ROUTINE_COLUMNS[lunchIndex];
+  const afterLunch = FRIDAY_ROUTINE_COLUMNS.slice(lunchIndex + 1);
+
+  const target = Math.max(1, Math.min(beforeLunch.length, Number(targetBeforeLunchCount) || beforeLunch.length));
+  if (beforeLunch.length <= target) return FRIDAY_ROUTINE_COLUMNS;
+
+  // The official normal-day routine can hide completely unused columns.
+  // Friday has four possible periods before its 1:00-3:15 P&L break, so when
+  // the normal routine only displays three pre-lunch columns, omit a BLANK
+  // Friday period instead of creating a fourth physical column that pushes
+  // P&L to the right. Always keep 8:00-9:15 as the visible Friday starting
+  // period and never drop a period containing a class/activity.
+  const mustKeep = new Set([beforeLunch[0].id]);
+  beforeLunch.forEach((column) => {
+    if (routine.entries?.Fri?.[column.id]) mustKeep.add(column.id);
+  });
+
+  // If every candidate is occupied, preserving the data is more important
+  // than compressing the table. In the usual case there is at least one blank
+  // period available and the Friday P&L column remains aligned with above.
+  if (mustKeep.size > target) return FRIDAY_ROUTINE_COLUMNS;
+
+  const keepIds = new Set(mustKeep);
+  // Prefer blank periods nearest to the occupied late-morning periods. This
+  // keeps the 8:00 start while removing an unnecessary gap such as 9:15-10:30.
+  for (let index = beforeLunch.length - 1; index >= 0 && keepIds.size < target; index -= 1) {
+    keepIds.add(beforeLunch[index].id);
+  }
+
+  return [
+    ...beforeLunch.filter((column) => keepIds.has(column.id)),
+    lunch,
+    ...afterLunch,
+  ];
+}
 const TRANSPARENT_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M/wHwAF/gL+3vV0VQAAAABJRU5ErkJggg==",
   "base64"
@@ -59,6 +117,59 @@ function getCellWidth(cellXml) {
 
 function setCellWidth(cellXml, width) {
   return cellXml.replace(/(<w:tcW[^>]*w:w=")\d+("[^>]*>)/, `$1${Math.max(1, Math.round(width))}$2`);
+}
+
+function setCellGridSpan(cellXml, span = 1) {
+  const safeSpan = Math.max(1, Math.round(span));
+  if (safeSpan <= 1) return cellXml;
+  const updated = cellXml.replace(/<w:gridSpan[^>]*\/>/g, "");
+  return updated.replace(/<\/w:tcPr>/, `<w:gridSpan w:val="${safeSpan}"/></w:tcPr>`);
+}
+
+function setCellVerticalMerge(cellXml, mode) {
+  const clean = cellXml
+    .replace(/<w:vMerge(?:\s[^>]*)?\/>/g, "")
+    .replace(/<w:vMerge(?:\s[^>]*)?>[\s\S]*?<\/w:vMerge>/g, "");
+  const merge = mode === "restart" ? '<w:vMerge w:val="restart"/>' : '<w:vMerge/>';
+  return clean.replace(/<\/w:tcPr>/, `${merge}</w:tcPr>`);
+}
+
+function setCellLayout(cellXml, width, span = 1) {
+  return setCellGridSpan(setCellWidth(cellXml, width), span);
+}
+
+function buildSharedGrid(layouts = []) {
+  const normalized = layouts
+    .filter((widths) => Array.isArray(widths) && widths.length)
+    .map((widths) => widths.map((width) => Math.max(1, Math.round(width))));
+  if (!normalized.length) return { widths: [], spans: [] };
+
+  const total = normalized[0].reduce((sum, width) => sum + width, 0);
+  const boundarySet = new Set([0, total]);
+  normalized.forEach((widths) => {
+    let cursor = 0;
+    widths.forEach((width, index) => {
+      cursor += width;
+      if (index === widths.length - 1) cursor = total;
+      boundarySet.add(cursor);
+    });
+  });
+
+  const boundaries = [...boundarySet].sort((a, b) => a - b);
+  const gridWidths = boundaries.slice(1).map((value, index) => value - boundaries[index]);
+  const spans = normalized.map((widths) => {
+    let cursor = 0;
+    return widths.map((width, index) => {
+      const start = cursor;
+      cursor += width;
+      if (index === widths.length - 1) cursor = total;
+      const startIndex = boundaries.indexOf(start);
+      const endIndex = boundaries.indexOf(cursor);
+      return Math.max(1, endIndex - startIndex);
+    });
+  });
+
+  return { widths: gridWidths, spans };
 }
 
 function setCellTexts(cellXml, values = []) {
@@ -128,7 +239,25 @@ function buildDynamicTable(templateTable, routine, variant) {
   if (!rows.length || !rowCells[0]?.length) return templateTable;
 
   const isNameplate = variant === "nameplate";
-  const visibleSlotIds = getVisibleSlotIds(routine.entries || {}, routine.workingDays || []);
+  const requestedDays = new Set(Array.isArray(routine.days) && routine.days.length
+    ? routine.days
+    : OFFICIAL_DAYS.map((item) => item.id));
+  const days = OFFICIAL_DAYS.map((item) => item.id).filter((day) => requestedDays.has(day));
+  const workingSet = new Set(routine.workingDays || []);
+
+  // In the official class-routine document, Friday has its own time header and
+  // row (matching the university's printed routine format). Exclude Friday
+  // from the normal column calculation so its extended slots do not appear as
+  // extra columns on the right side of the Monday-Thursday/Saturday table.
+  // Both official downloads use the university's separate Friday timetable.
+  // Excluding Friday from the normal column calculation prevents Friday-only
+  // Evening periods from creating a long strip of extra columns in the
+  // Faculty Nameplate document as well.
+  const useSpecialFriday = days.includes("Fri") && workingSet.has("Fri");
+  const mainDays = useSpecialFriday ? days.filter((day) => day !== "Fri") : days;
+  const mainWorkingDays = (routine.workingDays || []).filter((day) => mainDays.includes(day));
+
+  const visibleSlotIds = getVisibleSlotIds(routine.entries || {}, mainWorkingDays);
   const visibleDaySlots = visibleSlotIds.filter((id) => SLOT_MAP[id]?.shift === "Day");
   const visibleEveningSlots = visibleSlotIds.filter((id) => SLOT_MAP[id]?.shift === "Evening");
   const beforeLunch = visibleDaySlots.filter((id) => (SLOT_MAP[id]?.sequenceOrder || 0) <= 3);
@@ -139,6 +268,9 @@ function buildDynamicTable(templateTable, routine, variant) {
     ...afterLunch.map((id) => ({ kind: "slot", id })),
     ...visibleEveningSlots.map((id) => ({ kind: "slot", id })),
   ];
+  const fridayRoutineColumns = useSpecialFriday
+    ? getFridayDisplayColumns(routine, beforeLunch.length)
+    : FRIDAY_ROUTINE_COLUMNS;
 
   const originalGrid = (templateTable.match(/<w:gridCol[^>]*w:w="(\d+)"[^>]*\/>/g) || [])
     .map((item) => Number(item.match(/w:w="(\d+)"/)?.[1] || 0));
@@ -148,8 +280,50 @@ function buildDynamicTable(templateTable, routine, variant) {
   const lunchWidth = originalGrid[lunchOriginalIndex] || (isNameplate ? 518 : 813);
   const slotCount = Math.max(1, orderedColumns.filter((item) => item.kind === "slot").length);
   const hasLunch = orderedColumns.some((item) => item.kind === "lunch");
-  const regularWidth = Math.floor((totalWidth - dayWidth - (hasLunch ? lunchWidth : 0)) / slotCount);
-  const widths = [dayWidth, ...orderedColumns.map((column) => (column.kind === "lunch" ? lunchWidth : regularWidth))];
+
+  // Preserve the current Monday-Thursday geometry when the normal routine has
+  // the same nine teaching/activity positions that Friday used before the
+  // dedicated 1:00-3:15 P&L column was introduced. Friday itself now has ten
+  // cells (9 periods + P&L), so it gets its own boundaries without changing
+  // the normal-day columns above it.
+  const fridayTeachingSlotCount = fridayRoutineColumns.filter((column) => column.kind === "slot").length;
+  const keepMainUniformForFriday = useSpecialFriday && orderedColumns.length === fridayTeachingSlotCount;
+  const regularWidth = keepMainUniformForFriday
+    ? Math.floor((totalWidth - dayWidth) / orderedColumns.length)
+    : Math.floor((totalWidth - dayWidth - (hasLunch ? lunchWidth : 0)) / slotCount);
+  const widths = [
+    dayWidth,
+    ...orderedColumns.map((column) =>
+      keepMainUniformForFriday ? regularWidth : (column.kind === "lunch" ? lunchWidth : regularWidth)
+    ),
+  ];
+  const widthRemainder = totalWidth - widths.reduce((sum, width) => sum + width, 0);
+  if (widths.length > 1 && widthRemainder) widths[widths.length - 1] += widthRemainder;
+
+  let fridayWidths = null;
+  if (useSpecialFriday) {
+    if (fridayRoutineColumns.length === orderedColumns.length) {
+      // The preferred layout: Friday uses the exact same physical column
+      // boundaries as the normal rows. Only the labels/times differ. This
+      // keeps the 1:00-3:15 Friday P&L directly under the normal P&L column.
+      fridayWidths = [...widths];
+    } else {
+      // Fallback only when all four Friday pre-lunch periods are occupied (or
+      // another unusual layout makes compression impossible). Never discard
+      // an occupied period merely to force alignment.
+      const available = totalWidth - dayWidth;
+      const fridayRegularWidth = Math.floor(available / fridayRoutineColumns.length);
+      fridayWidths = [dayWidth, ...fridayRoutineColumns.map(() => fridayRegularWidth)];
+      const fridayRemainder = totalWidth - fridayWidths.reduce((sum, width) => sum + width, 0);
+      if (fridayRemainder) fridayWidths[fridayWidths.length - 1] += fridayRemainder;
+    }
+  }
+
+  const sharedGrid = useSpecialFriday
+    ? buildSharedGrid([widths, fridayWidths])
+    : { widths, spans: [widths.map(() => 1)] };
+  const mainSpans = sharedGrid.spans[0] || widths.map(() => 1);
+  const fridaySpans = sharedGrid.spans[1] || (fridayWidths || []).map(() => 1);
 
   const headerCells = rowCells[0];
   const dayHeaderPrototype = headerCells[0];
@@ -163,56 +337,155 @@ function buildDynamicTable(templateTable, routine, variant) {
   const lunchRestartPrototype = isNameplate ? lunchHeaderPrototype : rowCells[1]?.[4];
   const lunchContinuePrototype = rowCells[Math.min(2, rowCells.length - 1)]?.[4] || lunchRestartPrototype;
 
-  const dayHeader = setCellWidth(setCellTexts(dayHeaderPrototype, isNameplate ? ["Day/Time"] : ["Time", "Day"]), dayWidth);
-  const headerDynamicCells = orderedColumns.map((column) => {
+  const dayHeader = setCellLayout(
+    setCellTexts(dayHeaderPrototype, isNameplate ? ["Day/Time"] : ["Time", "Day"]),
+    dayWidth,
+    mainSpans[0]
+  );
+  const headerDynamicCells = orderedColumns.map((column, columnIndex) => {
+    const width = column.kind === "lunch" ? lunchWidth : regularWidth;
+    const span = mainSpans[columnIndex + 1];
     if (column.kind === "lunch") {
-      return setCellWidth(
+      return setCellLayout(
         setCellTexts(lunchHeaderPrototype, isNameplate ? ["P&L"] : [""]),
-        lunchWidth
+        width,
+        span
       );
     }
     const slot = SLOT_MAP[column.id];
-    return setCellWidth(
-      setCellTexts(slotHeaderPrototype, isNameplate ? [slot.start, "", "", slot.end, "", ""] : [`${slot.start.replace(/^0/, "").replace(/\s?(AM|PM)$/i, "")}-${slot.end.replace(/^0/, "").replace(/\s?(AM|PM)$/i, "")}`]),
-      regularWidth
+    return setCellLayout(
+      setCellTexts(slotHeaderPrototype, isNameplate
+        ? [slot.start, "", "", slot.end, "", ""]
+        : [`${slot.start.replace(/^0/, "").replace(/\s?(AM|PM)$/i, "")}-${slot.end.replace(/^0/, "").replace(/\s?(AM|PM)$/i, "")}`]),
+      width,
+      span
     );
   });
-  let headerRow = rows[0].replace(getBlocks(rows[0], "w:tc").join(""), `${dayHeader}${headerDynamicCells.join("")}`);
+  const headerRow = rows[0].replace(getBlocks(rows[0], "w:tc").join(""), `${dayHeader}${headerDynamicCells.join("")}`);
 
-  const requestedDays = new Set(Array.isArray(routine.days) && routine.days.length
-    ? routine.days
-    : OFFICIAL_DAYS.map((item) => item.id));
-  const days = OFFICIAL_DAYS.map((item) => item.id).filter((day) => requestedDays.has(day));
-  const workingSet = new Set(routine.workingDays || []);
-  const bodyRows = days.map((day, dayIndex) => {
+  const bodyRows = mainDays.map((day, dayIndex) => {
     const rowPrototype = rows[Math.min(dayIndex + 1, rows.length - 1)];
     const dayText = isNameplate ? DAY_LABELS[day] : day.toUpperCase();
-    const dayCell = setCellWidth(setCellTexts(normalDayPrototype, [dayText]), dayWidth);
-    const cells = orderedColumns.map((column) => {
+    const dayCell = setCellLayout(setCellTexts(normalDayPrototype, [dayText]), dayWidth, mainSpans[0]);
+    const cells = orderedColumns.map((column, columnIndex) => {
+      const width = column.kind === "lunch" ? lunchWidth : regularWidth;
+      const span = mainSpans[columnIndex + 1];
       if (column.kind === "lunch") {
         if (isNameplate) {
-          return setCellWidth(setCellTexts(lunchContinuePrototype, [""]), lunchWidth);
+          return setCellLayout(setCellTexts(lunchContinuePrototype, [""]), width, span);
         }
         const prototype = dayIndex === 0 ? lunchRestartPrototype : lunchContinuePrototype;
-        return setCellWidth(setCellTexts(prototype, dayIndex === 0 ? ["P&L"] : [""]), lunchWidth);
+        return setCellLayout(setCellTexts(prototype, dayIndex === 0 ? ["P&L"] : [""]), width, span);
       }
 
       if (!workingSet.has(day)) {
-        return setCellWidth(setCellTexts(setCellFill(offPrototype, isNameplate ? "D9E4F2" : "D3D3D3"), ["OFF"]), regularWidth);
+        return setCellLayout(
+          setCellTexts(setCellFill(offPrototype, isNameplate ? "D9E4F2" : "D3D3D3"), ["OFF"]),
+          width,
+          span
+        );
       }
 
       const entry = routine.entries?.[day]?.[column.id] || null;
-      if (!entry) return setCellWidth(setCellTexts(normalBlankPrototype, [""]), regularWidth);
-      if (entry.type === "CLASS") return setCellWidth(setCellTexts(classPrototype, entryTexts(entry)), regularWidth);
-      return setCellWidth(setCellTexts(activityPrototype, [entry.label || entry.type]), regularWidth);
+      if (!entry) return setCellLayout(setCellTexts(normalBlankPrototype, [""]), width, span);
+      if (entry.type === "CLASS") return setCellLayout(setCellTexts(classPrototype, entryTexts(entry)), width, span);
+      return setCellLayout(setCellTexts(activityPrototype, [entry.label || entry.type]), width, span);
     });
 
     const oldCells = getBlocks(rowPrototype, "w:tc");
     return rowPrototype.replace(oldCells.join(""), `${dayCell}${cells.join("")}`);
   });
 
+  if (useSpecialFriday) {
+    const fridayHeaderPrototype = rows[0];
+    const fridayRowPrototype = rows[rows.length - 1] || rows[Math.max(1, rows.length - 2)];
+
+    // Keep each document's own visual language: the official routine uses its
+    // gray Friday band, while the Faculty Nameplate keeps the existing BUBT
+    // blue header + light-blue body styling. The structure is identical in
+    // both: merged Friday cell, one time row, one class/activity row.
+    const fridayDayFill = isNameplate ? "D0DEEE" : "B7B5B5";
+    const fridayTimeFill = isNameplate ? "5B9BD4" : "B7B5B5";
+    const fridayBodyFill = isNameplate ? "D0DEEE" : "B7B5B5";
+    const fridayDayText = isNameplate ? (DAY_LABELS.Fri || "Friday") : "FRI";
+
+    const fridayHeaderCells = [
+      setCellVerticalMerge(
+        setCellLayout(
+          setCellTexts(setCellFill(isNameplate ? normalDayPrototype : dayHeaderPrototype, fridayDayFill), [fridayDayText]),
+          fridayWidths[0],
+          fridaySpans[0]
+        ),
+        "restart"
+      ),
+      ...fridayRoutineColumns.map((column, index) =>
+        setCellLayout(
+          setCellTexts(setCellFill(slotHeaderPrototype, fridayTimeFill), [column.label]),
+          fridayWidths[index + 1],
+          fridaySpans[index + 1]
+        )
+      ),
+    ];
+    const fridayHeaderRow = fridayHeaderPrototype.replace(
+      getBlocks(fridayHeaderPrototype, "w:tc").join(""),
+      fridayHeaderCells.join("")
+    );
+
+    const fridayBodyCells = [
+      setCellVerticalMerge(
+        setCellLayout(
+          setCellTexts(setCellFill(normalDayPrototype, fridayDayFill), [""]),
+          fridayWidths[0],
+          fridaySpans[0]
+        ),
+        "continue"
+      ),
+      ...fridayRoutineColumns.map((column, index) => {
+        const width = fridayWidths[index + 1];
+        const span = fridaySpans[index + 1];
+
+        // Friday 1:00-3:15 is always the official Prayer & Lunch period. It is
+        // display-only and can never contain a class or weekly activity.
+        if (column.kind === "lunch") {
+          return setCellLayout(
+            setCellTexts(setCellFill(activityPrototype, fridayBodyFill), ["P&L"]),
+            width,
+            span
+          );
+        }
+
+        const entry = routine.entries?.Fri?.[column.id] || null;
+        if (!entry) {
+          return setCellLayout(
+            setCellTexts(setCellFill(normalBlankPrototype, fridayBodyFill), [""]),
+            width,
+            span
+          );
+        }
+        if (entry.type === "CLASS") {
+          return setCellLayout(
+            setCellTexts(setCellFill(classPrototype, fridayBodyFill), entryTexts(entry)),
+            width,
+            span
+          );
+        }
+        return setCellLayout(
+          setCellTexts(setCellFill(activityPrototype, fridayBodyFill), [entry.label || entry.type]),
+          width,
+          span
+        );
+      }),
+    ];
+    const fridayRow = fridayRowPrototype.replace(
+      getBlocks(fridayRowPrototype, "w:tc").join(""),
+      fridayBodyCells.join("")
+    );
+
+    bodyRows.push(fridayHeaderRow, fridayRow);
+  }
+
   let result = templateTable.replace(rows.join(""), `${headerRow}${bodyRows.join("")}`);
-  result = setTableGrid(result, widths);
+  result = setTableGrid(result, sharedGrid.widths);
 
   // The converted class-routine template stores its timetable as a floating
   // table. Once unused time columns are removed, Word/LibreOffice may allow

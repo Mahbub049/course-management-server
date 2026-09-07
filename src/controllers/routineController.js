@@ -27,6 +27,10 @@ const {
   generateNameplateDocument,
   buildDownloadFilename,
 } = require("../utils/routineDocumentGenerator");
+const {
+  generateDayOffApplicationDocument,
+  buildDayOffApplicationFilename,
+} = require("../utils/dayOffApplicationGenerator");
 
 const DEFAULT_DAYS = OFFICIAL_DAYS.map((item) => item.id);
 const DEFAULT_TIME_SLOTS = OFFICIAL_TIME_SLOTS;
@@ -817,6 +821,75 @@ async function downloadMyRoutineDocument(req, res, kind) {
 const downloadMyClassRoutine = (req, res) => downloadMyRoutineDocument(req, res, "routine");
 const downloadMyFacultyNameplate = (req, res) => downloadMyRoutineDocument(req, res, "nameplate");
 
+const DAY_OFF_LABELS = {
+  Sun: "Sunday",
+  Mon: "Monday",
+  Tue: "Tuesday",
+  Wed: "Wednesday",
+  Thu: "Thursday",
+  Fri: "Friday",
+};
+
+function hasClassOnDay(routine, day) {
+  return Object.values(routine?.entries?.[day] || {}).some((entry) => entry?.type === "CLASS");
+}
+
+const downloadMyDayOffApplication = async (req, res) => {
+  try {
+    const teacherId = req.user.userId;
+    const dayOff = cleanString(req.body?.dayOff);
+    const applicationDate = cleanString(req.body?.applicationDate);
+
+    if (!DAY_OFF_LABELS[dayOff] || dayOff === "Sat") {
+      return res.status(400).json({ message: "Select a valid class-free day other than Saturday." });
+    }
+
+    const [routineDoc, context] = await Promise.all([
+      findRoutineRaw(teacherId),
+      getRoutineContext(teacherId),
+    ]);
+
+    if (!routineDoc) {
+      return res.status(404).json({ message: "Create and save the routine first." });
+    }
+
+    const routine = normalizePayload(
+      {
+        ...routineDoc,
+        entries: upgradeLegacyEntries(routineDoc, context.courses),
+        courses: context.courses,
+      },
+      context
+    );
+
+    if (!hasClassOnDay(routine, "Fri")) {
+      return res.status(409).json({ message: "The Day-off Application is available only when Friday has at least one class." });
+    }
+
+    if (hasClassOnDay(routine, dayOff)) {
+      return res.status(409).json({ message: `${DAY_OFF_LABELS[dayOff]} has a scheduled class and cannot be selected as the day-off.` });
+    }
+
+    const buffer = await generateDayOffApplicationDocument({
+      routine,
+      dayOffLabel: DAY_OFF_LABELS[dayOff],
+      applicationDate,
+    });
+    const filename = buildDayOffApplicationFilename(
+      routine,
+      DAY_OFF_LABELS[dayOff],
+      applicationDate
+    );
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.wordprocessingml.document");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    return res.send(buffer);
+  } catch (err) {
+    console.error("download day-off application error:", err);
+    return res.status(500).json({ message: err?.message || "Failed to generate the day-off application." });
+  }
+};
+
 const getStudentCounsellingInfo = async (req, res) => {
   try {
     const studentId = req.user.userId;
@@ -1319,6 +1392,7 @@ module.exports = {
   saveMyRoutine,
   downloadMyClassRoutine,
   downloadMyFacultyNameplate,
+  downloadMyDayOffApplication,
   getStudentCounsellingInfo,
   createStudentCounsellingBooking,
   deleteStudentCounsellingBooking,

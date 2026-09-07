@@ -12,6 +12,7 @@ const {
   saveMyRoutine,
   downloadMyClassRoutine,
   downloadMyFacultyNameplate,
+  downloadMyDayOffApplication,
   getStudentCounsellingInfo,
   createStudentCounsellingBooking,
   deleteStudentCounsellingBooking,
@@ -31,6 +32,7 @@ router.get("/my", requireTeacher, getMyRoutine);
 router.put("/my", requireTeacher, saveMyRoutine);
 router.get("/my/download/class-routine", requireTeacher, downloadMyClassRoutine);
 router.get("/my/download/faculty-nameplate", requireTeacher, downloadMyFacultyNameplate);
+router.post("/my/download/day-off-application", requireTeacher, downloadMyDayOffApplication);
 
 router.get("/my/counselling-bookings", requireTeacher, getTeacherCounsellingBookings);
 router.get("/my/counselling-records/report", requireTeacher, getTeacherCounsellingReport);
