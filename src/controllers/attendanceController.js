@@ -171,6 +171,8 @@ const getAttendanceSheet = async (req, res) => {
     const { courseId } = req.query;
     if (!courseId) return res.status(400).json({ message: "courseId is required" });
 
+    // Ownership is checked from the course itself. Do not reject archived courses:
+    // teachers must be able to generate historical attendance sheets for their own courses.
     const course = await Course.findOne({ _id: courseId, createdBy: teacherId });
     if (!course) return res.status(404).json({ message: "Course not found for this teacher" });
 
@@ -178,75 +180,125 @@ const getAttendanceSheet = async (req, res) => {
       "name designation department shortCode"
     );
 
+    // Once course ownership is verified, query by course rather than teacher+course.
+    // This keeps archived/legacy attendance readable even if an old attendance document
+    // has a stale teacher reference from an earlier account/migration.
     const attendanceDocs = await Attendance.find({
-      teacher: teacherId,
       course: course._id,
     }).sort({ date: 1, period: 1 });
 
-    // ✅ Build sessions = [{key,date,period,label}]
-    // Legacy docs: if no period, expand numClasses -> periods 1..numClasses
-    const sessions = [];
+    // Build expanded period-wise attendance safely. Some old/archived data may contain
+    // incomplete legacy documents, so ignore unusable dates rather than failing the sheet.
     const expanded = []; // {dateStr, period, records}
 
     attendanceDocs.forEach((a) => {
-      const dStr = a.date.toISOString().slice(0, 10);
+      const dateValue = a?.date instanceof Date ? a.date : new Date(a?.date);
+      if (!dateValue || Number.isNaN(dateValue.getTime())) return;
 
-      if (a.period && Number(a.period) >= 1) {
-        expanded.push({ dateStr: dStr, period: Number(a.period), records: a.records || [] });
-      } else {
-        const n = Number(a.numClasses || 1);
-        for (let p = 1; p <= n; p++) {
-          expanded.push({ dateStr: dStr, period: p, records: a.records || [] });
-        }
+      const dateStr = dateValue.toISOString().slice(0, 10);
+      const records = Array.isArray(a?.records) ? a.records : [];
+      const period = Number(a?.period);
+
+      if (Number.isFinite(period) && period >= 1) {
+        expanded.push({ dateStr, period, records });
+        return;
+      }
+
+      const legacyCount = Math.max(1, Number(a?.numClasses || 1));
+      for (let p = 1; p <= legacyCount; p += 1) {
+        expanded.push({ dateStr, period: p, records });
       }
     });
 
-    // sort expanded by date then period
     expanded.sort((a, b) => {
       if (a.dateStr < b.dateStr) return -1;
       if (a.dateStr > b.dateStr) return 1;
       return a.period - b.period;
     });
 
-    expanded.forEach((x) => {
-      const key = `${x.dateStr}|P${x.period}`;
-      sessions.push({
-        key,
-        date: x.dateStr,
-        period: x.period,
-        label: `${x.dateStr} (P${x.period})`,
+    // Merge duplicate legacy session keys instead of returning duplicate columns.
+    const sessionMap = new Map();
+    expanded.forEach((item) => {
+      const key = `${item.dateStr}|P${item.period}`;
+      if (!sessionMap.has(key)) {
+        sessionMap.set(key, {
+          key,
+          date: item.dateStr,
+          period: item.period,
+          label: `${item.dateStr} (P${item.period})`,
+          records: [],
+        });
+      }
+
+      const session = sessionMap.get(key);
+      const recordMap = new Map(
+        session.records.map((record) => [String(record.roll), !!record.present])
+      );
+
+      (item.records || []).forEach((record) => {
+        if (record?.roll === undefined || record?.roll === null) return;
+        recordMap.set(String(record.roll), !!record.present);
+      });
+
+      session.records = Array.from(recordMap, ([roll, present]) => ({ roll, present }));
+    });
+
+    const mergedSessions = Array.from(sessionMap.values()).sort((a, b) => {
+      if (a.date < b.date) return -1;
+      if (a.date > b.date) return 1;
+      return a.period - b.period;
+    });
+
+    const sessions = mergedSessions.map(({ records, ...session }) => session);
+
+    // Archived courses can contain stale enrollment rows whose student account no longer
+    // exists. Filter those rows instead of dereferencing null populated students.
+    const enrollments = await Enrollment.find({ course: course._id })
+      .populate("student", "username name")
+      .sort({ createdAt: 1 });
+
+    const studentMap = new Map();
+
+    enrollments.forEach((enrollment) => {
+      const student = enrollment?.student;
+      if (!student?.username) return;
+      const roll = String(student.username);
+      studentMap.set(roll, {
+        roll,
+        name: student.name || "",
       });
     });
 
-    // students
-    const enrollments = await Enrollment.find({ course: course._id })
-      .populate("student", "username name")
-      .sort({ "student.username": 1 });
-
-    let students = enrollments.map((e) => ({
-      roll: String(e.student.username),
-      name: e.student.name,
-    }));
-
-    // fallback if enrollments empty but attendance exists
-    if (!students.length) {
-      const rollSet = new Set();
-      expanded.forEach((x) => {
-        (x.records || []).forEach((r) => r?.roll && rollSet.add(String(r.roll)));
+    // Preserve students found only in old attendance records, even if their enrollment
+    // or user account was removed after the course was archived.
+    mergedSessions.forEach((session) => {
+      (session.records || []).forEach((record) => {
+        if (record?.roll === undefined || record?.roll === null) return;
+        const roll = String(record.roll);
+        if (!studentMap.has(roll)) {
+          studentMap.set(roll, { roll, name: "" });
+        }
       });
-      students = Array.from(rollSet).sort().map((roll) => ({ roll, name: "" }));
-    }
+    });
 
-    // matrix[roll][sessionKey] = boolean
+    const students = Array.from(studentMap.values()).sort((a, b) =>
+      String(a.roll).localeCompare(String(b.roll), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      })
+    );
+
     const matrix = {};
-    students.forEach((s) => (matrix[s.roll] = {}));
+    students.forEach((student) => {
+      matrix[student.roll] = {};
+    });
 
-    expanded.forEach((x) => {
-      const key = `${x.dateStr}|P${x.period}`;
-      (x.records || []).forEach((r) => {
-        const roll = String(r.roll);
+    mergedSessions.forEach((session) => {
+      (session.records || []).forEach((record) => {
+        if (record?.roll === undefined || record?.roll === null) return;
+        const roll = String(record.roll);
         if (!matrix[roll]) matrix[roll] = {};
-        matrix[roll][key] = !!r.present;
+        matrix[roll][session.key] = !!record.present;
       });
     });
 
@@ -262,6 +314,7 @@ const getAttendanceSheet = async (req, res) => {
         program: course.department || course.program || "",
         year: course.year,
         semester: course.semester,
+        archived: course.archived === true,
       },
       teacher: {
         name: teacher?.name || "Course Teacher",
