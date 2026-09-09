@@ -35,36 +35,38 @@ const FRIDAY_ROUTINE_COLUMNS = [
   { kind: "slot", id: "eve_2015_2130", label: "8:15-9:30" },
 ];
 
+const NORMAL_PRE_LUNCH_SLOT_IDS = [
+  "day_0815_0945",
+  "day_0945_1115",
+  "day_1115_1245",
+];
+
 function getFridayDisplayColumns(routine, targetBeforeLunchCount) {
   const lunchIndex = FRIDAY_ROUTINE_COLUMNS.findIndex((column) => column.kind === "lunch");
   const beforeLunch = FRIDAY_ROUTINE_COLUMNS.slice(0, lunchIndex);
   const lunch = FRIDAY_ROUTINE_COLUMNS[lunchIndex];
   const afterLunch = FRIDAY_ROUTINE_COLUMNS.slice(lunchIndex + 1);
 
-  const target = Math.max(1, Math.min(beforeLunch.length, Number(targetBeforeLunchCount) || beforeLunch.length));
-  if (beforeLunch.length <= target) return FRIDAY_ROUTINE_COLUMNS;
+  // The university mapping gives the regular routine three pre-P&L columns,
+  // while Friday has four possible 75-minute periods. Keep every occupied
+  // Friday period. If three or fewer are occupied, show exactly three periods
+  // by filling blank positions; between the first two Friday candidates,
+  // prefer the later 09:15-10:30 period. Therefore P&L stays in the same
+  // physical column unless all four Friday pre-P&L periods are occupied.
+  const target = Math.max(3, Math.min(beforeLunch.length, Number(targetBeforeLunchCount) || 3));
+  const occupied = beforeLunch.filter((column) => routine.entries?.Fri?.[column.id]);
+  if (occupied.length > target) return FRIDAY_ROUTINE_COLUMNS;
 
-  // The official normal-day routine can hide completely unused columns.
-  // Friday has four possible periods before its 1:00-3:15 P&L break, so when
-  // the normal routine only displays three pre-lunch columns, omit a BLANK
-  // Friday period instead of creating a fourth physical column that pushes
-  // P&L to the right. Always keep 8:00-9:15 as the visible Friday starting
-  // period and never drop a period containing a class/activity.
-  const mustKeep = new Set([beforeLunch[0].id]);
-  beforeLunch.forEach((column) => {
-    if (routine.entries?.Fri?.[column.id]) mustKeep.add(column.id);
-  });
-
-  // If every candidate is occupied, preserving the data is more important
-  // than compressing the table. In the usual case there is at least one blank
-  // period available and the Friday P&L column remains aligned with above.
-  if (mustKeep.size > target) return FRIDAY_ROUTINE_COLUMNS;
-
-  const keepIds = new Set(mustKeep);
-  // Prefer blank periods nearest to the occupied late-morning periods. This
-  // keeps the 8:00 start while removing an unnecessary gap such as 9:15-10:30.
-  for (let index = beforeLunch.length - 1; index >= 0 && keepIds.size < target; index -= 1) {
-    keepIds.add(beforeLunch[index].id);
+  const keepIds = new Set(occupied.map((column) => column.id));
+  const fillPriority = [
+    "eve_0915_1030",
+    "eve_1030_1145",
+    "eve_1145_1300",
+    "eve_0800_0915",
+  ];
+  for (const id of fillPriority) {
+    if (keepIds.size >= target) break;
+    keepIds.add(id);
   }
 
   return [
@@ -260,11 +262,16 @@ function buildDynamicTable(templateTable, routine, variant) {
   const visibleSlotIds = getVisibleSlotIds(routine.entries || {}, mainWorkingDays);
   const visibleDaySlots = visibleSlotIds.filter((id) => SLOT_MAP[id]?.shift === "Day");
   const visibleEveningSlots = visibleSlotIds.filter((id) => SLOT_MAP[id]?.shift === "Evening");
-  const beforeLunch = visibleDaySlots.filter((id) => (SLOT_MAP[id]?.sequenceOrder || 0) <= 3);
+  const visibleBeforeLunch = visibleDaySlots.filter((id) => (SLOT_MAP[id]?.sequenceOrder || 0) <= 3);
+  const beforeLunch = useSpecialFriday
+    ? NORMAL_PRE_LUNCH_SLOT_IDS.filter((id) => SLOT_MAP[id])
+    : visibleBeforeLunch;
   const afterLunch = visibleDaySlots.filter((id) => (SLOT_MAP[id]?.sequenceOrder || 0) >= 4);
   const orderedColumns = [
     ...beforeLunch.map((id) => ({ kind: "slot", id })),
-    ...(visibleDaySlots.length ? [{ kind: "lunch", id: PRAYER_LUNCH.id }] : []),
+    ...((visibleDaySlots.length || (useSpecialFriday && mainWorkingDays.length))
+      ? [{ kind: "lunch", id: PRAYER_LUNCH.id }]
+      : []),
     ...afterLunch.map((id) => ({ kind: "slot", id })),
     ...visibleEveningSlots.map((id) => ({ kind: "slot", id })),
   ];
@@ -418,13 +425,32 @@ function buildDynamicTable(templateTable, routine, variant) {
         ),
         "restart"
       ),
-      ...fridayRoutineColumns.map((column, index) =>
-        setCellLayout(
+      ...fridayRoutineColumns.map((column, index) => {
+        const width = fridayWidths[index + 1];
+        const span = fridaySpans[index + 1];
+
+        // In the Faculty Nameplate there must be only ONE P&L cell for the
+        // entire timetable. The regular-day P&L merge already starts in the
+        // main header and continues through Monday-Thursday, so Friday must
+        // CONTINUE that same merge (blank) instead of starting a second P&L
+        // block. The official routine keeps its separate Friday time header.
+        if (isNameplate && column.kind === "lunch") {
+          return setCellVerticalMerge(
+            setCellLayout(
+              setCellTexts(setCellFill(lunchContinuePrototype, fridayTimeFill), [""]),
+              width,
+              span
+            ),
+            "continue"
+          );
+        }
+
+        return setCellLayout(
           setCellTexts(setCellFill(slotHeaderPrototype, fridayTimeFill), [column.label]),
-          fridayWidths[index + 1],
-          fridaySpans[index + 1]
-        )
-      ),
+          width,
+          span
+        );
+      }),
     ];
     const fridayHeaderRow = fridayHeaderPrototype.replace(
       getBlocks(fridayHeaderPrototype, "w:tc").join(""),
@@ -447,6 +473,16 @@ function buildDynamicTable(templateTable, routine, variant) {
         // Friday 1:00-3:15 is always the official Prayer & Lunch period. It is
         // display-only and can never contain a class or weekly activity.
         if (column.kind === "lunch") {
+          if (isNameplate) {
+            return setCellVerticalMerge(
+              setCellLayout(
+                setCellTexts(setCellFill(lunchContinuePrototype, fridayTimeFill), [""]),
+                width,
+                span
+              ),
+              "continue"
+            );
+          }
           return setCellLayout(
             setCellTexts(setCellFill(activityPrototype, fridayBodyFill), ["P&L"]),
             width,
