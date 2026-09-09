@@ -19,6 +19,7 @@ const routineRoutes = require('./routes/routineRoutes');
 const academicCalendarRoutes = require("./routes/academicCalendarRoutes");
 const notebookRoutes = require("./routes/notebookRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
+const calculationRoutes = require("./routes/calculationRoutes");
 const {
   MAX_SUBMISSION_UPLOAD_MB,
 } = require('./middleware/submissionUploadMiddleware');
@@ -102,6 +103,7 @@ app.use('/api/routine', routineRoutes);
 app.use("/api/academic-calendar", academicCalendarRoutes);
 app.use("/api/notebook", notebookRoutes);
 app.use("/api/notifications", notificationRoutes);
+app.use("/api/calculations", calculationRoutes);
 
 app.use((err, _req, res, next) => {
   if (err?.code === 'LIMIT_FILE_SIZE') {
