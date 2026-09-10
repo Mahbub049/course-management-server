@@ -111,6 +111,13 @@ const {
   saveProjectEvaluation,
 } = require("../controllers/projectEvaluationController");
 
+
+const {
+  getSelfStudyBill,
+  updateSelfStudyBillIntakes,
+  downloadSelfStudyBill,
+} = require("../controllers/selfStudyBillController");
+
 const {
   getTeacherProjectSyncState,
   saveTeacherProjectSyncConfig,
@@ -125,6 +132,9 @@ const teacherOnly = [authMiddleware, requireTeacher];
 // ===================================================
 router.get("/", ...teacherOnly, getCourses);
 router.get("/:courseId/students/export", ...teacherOnly, exportCourseStudents);
+router.get("/:courseId/self-study-bill", ...teacherOnly, getSelfStudyBill);
+router.put("/:courseId/self-study-bill/intakes", ...teacherOnly, updateSelfStudyBillIntakes);
+router.post("/:courseId/self-study-bill/download", ...teacherOnly, downloadSelfStudyBill);
 
 router.post("/", ...teacherOnly, createCourse);
 router.post("/:courseId/students/send-password-emails", ...teacherOnly, sendPasswordsByEmail);

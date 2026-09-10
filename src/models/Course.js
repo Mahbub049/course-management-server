@@ -83,8 +83,13 @@ const courseSchema = new mongoose.Schema(
     },
     courseType: {
       type: String,
-      enum: ["theory", "lab", "hybrid"],
+      enum: ["theory", "lab", "hybrid", "self_study"],
       default: "theory",
+    },
+    creditHours: {
+      type: Number,
+      min: 0,
+      default: null,
     },
 
     projectFeature: {

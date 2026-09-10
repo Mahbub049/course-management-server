@@ -4,6 +4,7 @@ const Course = require('../models/Course');
 const Assessment = require('../models/Assessment');
 const Enrollment = require('../models/Enrollment');
 const Mark = require('../models/Mark');
+const SelfStudyBillConfig = require('../models/SelfStudyBillConfig');
 const {
   normalizeShift,
   isProgramAllowedForShift,
@@ -12,7 +13,7 @@ const {
 // and the delete block below.
 // const Complaint = require('../models/Complaint');
 
-const ALLOWED_COURSE_TYPES = ['theory', 'lab', 'hybrid'];
+const ALLOWED_COURSE_TYPES = ['theory', 'lab', 'hybrid', 'self_study'];
 const ALLOWED_CT_POLICY_MODES = [
   'best_n_individual_scaled',
   'best_n_average_scaled',
@@ -143,6 +144,7 @@ const createCourse = async (req, res) => {
       semester,
       year,
       courseType,
+      creditHours,
       projectFeature,
       complaintSettings,
     } = req.body;
@@ -166,6 +168,16 @@ const createCourse = async (req, res) => {
       ? courseType
       : 'theory';
 
+    const normalizedCreditHours = Number(creditHours);
+    if (normalizedType === 'self_study') {
+      if (!String(intake || '').trim()) {
+        return res.status(400).json({ message: 'Intake is required for a Self Study Course.' });
+      }
+      if (!Number.isFinite(normalizedCreditHours) || normalizedCreditHours <= 0) {
+        return res.status(400).json({ message: 'Credit hour must be a number greater than 0 for a Self Study Course.' });
+      }
+    }
+
     const course = new Course({
       code,
       title,
@@ -176,6 +188,7 @@ const createCourse = async (req, res) => {
       semester,
       year,
       courseType: normalizedType,
+      creditHours: normalizedType === 'self_study' ? normalizedCreditHours : null,
       createdBy: teacherId,
       projectFeature: sanitizeProjectFeature(projectFeature),
       complaintSettings:
@@ -199,6 +212,7 @@ const createCourse = async (req, res) => {
       semester: course.semester,
       year: course.year,
       courseType: course.courseType,
+      creditHours: course.creditHours ?? null,
       complaintSettings: formatComplaintSettings(course),
     });
   } catch (err) {
@@ -243,6 +257,7 @@ const getCourses = async (req, res) => {
       semester: c.semester,
       year: c.year,
       courseType: c.courseType,
+      creditHours: c.creditHours ?? null,
       archived: c.archived ?? false,
       complaintSettings: formatComplaintSettings(c),
     }));
@@ -288,6 +303,7 @@ const updateCourse = async (req, res) => {
       semester,
       year,
       courseType,
+      creditHours,
       archived,
       classTestPolicy,
       assignmentPolicy,
@@ -339,6 +355,29 @@ const updateCourse = async (req, res) => {
 
     if (courseType && ALLOWED_COURSE_TYPES.includes(courseType)) {
       update.courseType = String(courseType).toLowerCase();
+    }
+
+    if (courseType !== undefined || creditHours !== undefined || intake !== undefined) {
+      const existingForSelfStudy = await Course.findOne({ _id: id, createdBy: teacherId })
+        .select('courseType creditHours intake');
+      if (!existingForSelfStudy) {
+        return res.status(404).json({ message: 'Course not found' });
+      }
+
+      const nextType = String(update.courseType || existingForSelfStudy.courseType || 'theory').toLowerCase();
+      if (nextType === 'self_study') {
+        const nextIntake = String(update.intake !== undefined ? update.intake : existingForSelfStudy.intake || '').trim();
+        const nextCreditHours = Number(creditHours !== undefined ? creditHours : existingForSelfStudy.creditHours);
+        if (!nextIntake) {
+          return res.status(400).json({ message: 'Intake is required for a Self Study Course.' });
+        }
+        if (!Number.isFinite(nextCreditHours) || nextCreditHours <= 0) {
+          return res.status(400).json({ message: 'Credit hour must be a number greater than 0 for a Self Study Course.' });
+        }
+        update.creditHours = nextCreditHours;
+      } else if (courseType !== undefined) {
+        update.creditHours = null;
+      }
     }
 
     if (classTestPolicy !== undefined) {
@@ -436,6 +475,7 @@ const deleteCourse = async (req, res) => {
       Assessment.deleteMany({ course: courseId }),
       Enrollment.deleteMany({ course: courseId }),
       Mark.deleteMany({ course: courseId }),
+      SelfStudyBillConfig.deleteMany({ course: courseId }),
       // Complaint && Complaint.deleteMany({ course: courseId }),
     ]);
 
