@@ -251,8 +251,10 @@ const getAttendanceSheet = async (req, res) => {
 
     const sessions = mergedSessions.map(({ records, ...session }) => session);
 
-    // Archived courses can contain stale enrollment rows whose student account no longer
-    // exists. Filter those rows instead of dereferencing null populated students.
+    // The course enrollment list is the single source of truth for who belongs
+    // in an attendance sheet. Old attendance records may still contain rolls for
+    // students who were later removed from the course, but those records must not
+    // recreate students in current or archived attendance sheets.
     const enrollments = await Enrollment.find({ course: course._id })
       .populate("student", "username name")
       .sort({ createdAt: 1 });
@@ -266,18 +268,6 @@ const getAttendanceSheet = async (req, res) => {
       studentMap.set(roll, {
         roll,
         name: student.name || "",
-      });
-    });
-
-    // Preserve students found only in old attendance records, even if their enrollment
-    // or user account was removed after the course was archived.
-    mergedSessions.forEach((session) => {
-      (session.records || []).forEach((record) => {
-        if (record?.roll === undefined || record?.roll === null) return;
-        const roll = String(record.roll);
-        if (!studentMap.has(roll)) {
-          studentMap.set(roll, { roll, name: "" });
-        }
       });
     });
 
@@ -297,7 +287,7 @@ const getAttendanceSheet = async (req, res) => {
       (session.records || []).forEach((record) => {
         if (record?.roll === undefined || record?.roll === null) return;
         const roll = String(record.roll);
-        if (!matrix[roll]) matrix[roll] = {};
+        if (!Object.prototype.hasOwnProperty.call(matrix, roll)) return;
         matrix[roll][session.key] = !!record.present;
       });
     });
