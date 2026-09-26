@@ -23,6 +23,7 @@ const calculationRoutes = require("./routes/calculationRoutes");
 const {
   MAX_SUBMISSION_UPLOAD_MB,
 } = require('./middleware/submissionUploadMiddleware');
+const { MAX_COURSE_FILE_UPLOAD_MB } = require('./middleware/courseFileUploadMiddleware');
 
 const app = express();
 
@@ -107,8 +108,10 @@ app.use("/api/calculations", calculationRoutes);
 
 app.use((err, _req, res, next) => {
   if (err?.code === 'LIMIT_FILE_SIZE') {
+    const isCourseFileUpload = String(_req?.originalUrl || '').includes('/course-file/');
+    const limit = isCourseFileUpload ? MAX_COURSE_FILE_UPLOAD_MB : MAX_SUBMISSION_UPLOAD_MB;
     return res.status(400).json({
-      message: `File is too large. The portal upload limit is ${MAX_SUBMISSION_UPLOAD_MB} MB.`,
+      message: `File is too large. The portal upload limit is ${limit} MB.`,
     });
   }
 

@@ -1336,6 +1336,7 @@ const getObeExportPayload = async (req, res) => {
       students,
       marks: activeMarks,
       continuousAssessment: output?.continuousAssessment || null,
+      labClp: output?.labClp || null,
       output,
     });
   } catch (error) {

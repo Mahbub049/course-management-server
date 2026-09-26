@@ -8,6 +8,7 @@ const Assessment = require('../models/Assessment');
 const Mark = require('../models/Mark');
 const AttendanceSummary = require('../models/AttendanceSummary');
 const { buildContinuousAssessmentData } = require('./obeContinuousAssessment');
+const { buildLabClpData } = require('./obeClp');
 
 const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 const round4 = (value) => Math.round((Number(value) || 0) * 10000) / 10000;
@@ -95,18 +96,19 @@ const buildOutputData = async (courseId) => {
     enrolledStudentIds.has(String(row.student))
   );
 
-  const continuousAssessment = buildContinuousAssessmentData({
+  const marksheetContinuousAssessment = buildContinuousAssessmentData({
     course: course || {},
     students,
     assessments,
     markDocs: activeRegularMarkDocs,
     attendanceSummaries: activeAttendanceSummaries,
   });
-  const continuousByStudent = new Map(
-    (continuousAssessment.students || []).map((row) => [String(row.studentId), row])
+  const marksheetContinuousByStudent = new Map(
+    (marksheetContinuousAssessment.students || []).map((row) => [String(row.studentId), row])
   );
 
   const isLabCourse = getCourseType(course || {}) === 'lab';
+  const labClp = isLabCourse ? await buildLabClpData(courseId) : null;
   const calculationBlueprints = isLabCourse
     ? blueprints.filter(isExamBlueprint)
     : blueprints;
@@ -127,18 +129,44 @@ const buildOutputData = async (courseId) => {
     }
   }
 
-  const examBlueprintIds = new Set(
-    calculationBlueprints.filter(isExamBlueprint).map((bp) => String(bp._id))
-  );
-  const useFixedContinuousAssessment = continuousAssessment.enabled === true;
+  let labContinuousMaxMarks = 0;
+  let labAttendanceCoCode = '';
+  let labClpItems = [];
+  if (isLabCourse) {
+    const availableCoCodes = new Set(outcomeList.map((row) => row.code));
+    labAttendanceCoCode = String(labClp?.attendanceCoCode || '').trim().toUpperCase();
+    if (!availableCoCodes.has(labAttendanceCoCode)) {
+      labAttendanceCoCode = availableCoCodes.has('CO3') ? 'CO3' : outcomeList[0]?.code || '';
+    }
+    if (labAttendanceCoCode && outcomeByCode.has(labAttendanceCoCode)) {
+      outcomeByCode.get(labAttendanceCoCode).maxMarks = round2(
+        outcomeByCode.get(labAttendanceCoCode).maxMarks + 5
+      );
+      labContinuousMaxMarks += 5;
+    }
+
+    labClpItems = Array.isArray(labClp?.items) && labClp.items.length
+      ? labClp.items
+      : [{
+          key: 'clp_total',
+          label: 'CLP',
+          marks: 25,
+          coCode: outcomeList.find((row) => row.code === 'CO1')?.code || outcomeList[0]?.code || '',
+          sourceAssessment: '',
+          order: 0,
+          isAggregateFallback: true,
+        }];
+
+    for (const item of labClpItems) {
+      const bucket = outcomeByCode.get(String(item.coCode || '').trim().toUpperCase());
+      if (bucket) bucket.maxMarks = round2(bucket.maxMarks + Number(item.marks || 0));
+      labContinuousMaxMarks += Number(item.marks || 0);
+    }
+  }
+
   const totalPossibleMarks = round2(
-    (useFixedContinuousAssessment ? Number(continuousAssessment.totalMarks || 30) : 0) +
-      calculationBlueprints.reduce((sum, bp) => {
-        if (useFixedContinuousAssessment && !examBlueprintIds.has(String(bp._id))) {
-          return sum;
-        }
-        return sum + Number(bp.totalMarks || 0);
-      }, 0)
+    (isLabCourse ? labContinuousMaxMarks : 0) +
+      calculationBlueprints.reduce((sum, bp) => sum + Number(bp.totalMarks || 0), 0)
   );
 
   const markMap = new Map();
@@ -147,29 +175,94 @@ const buildOutputData = async (courseId) => {
     markMap.set(key, doc);
   }
 
+  const labClpStudentMap = new Map(
+    (labClp?.students || []).map((row) => [String(row.studentId), row])
+  );
+
+  const labClpGroups = isLabCourse
+    ? labClpItems.reduce((groups, item) => {
+        const coCode = String(item.coCode || '').trim().toUpperCase();
+        const key = coCode || 'UNMAPPED';
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key: `clp_${key.toLowerCase()}`,
+            label: 'CLP',
+            assessmentName: `CLP ${key}`,
+            maxMarks: 0,
+            coCode,
+            itemKeys: [],
+          });
+        }
+        const group = groups.get(key);
+        group.maxMarks = round2(group.maxMarks + Number(item.marks || 0));
+        group.itemKeys.push(item.key);
+        return groups;
+      }, new Map())
+    : new Map();
+
+  const labContinuousHeaders = isLabCourse
+    ? [
+        {
+          key: 'attendance',
+          label: 'AT',
+          assessmentName: 'Attendance',
+          maxMarks: 5,
+          coCode: labAttendanceCoCode,
+        },
+        ...Array.from(labClpGroups.values()),
+      ]
+    : [];
+
   const studentRows = students.map((student) => {
     const totalsByCo = Object.fromEntries(outcomeList.map((co) => [co.code, 0]));
-    const continuousHeaders = Array.isArray(continuousAssessment.headers)
-      ? continuousAssessment.headers
-      : [];
-    const emptyContinuousRow = Object.fromEntries(
-      continuousHeaders.map((header) => [header.key, 0])
-    );
-    const continuousRow = continuousByStudent.get(student.studentId) || {
-      ...emptyContinuousRow,
-      total: 0,
-    };
-    let courseObtained = useFixedContinuousAssessment
-      ? Number(continuousRow.total || 0)
-      : 0;
-    const assessmentTotals = useFixedContinuousAssessment
-      ? continuousHeaders.map((header) => ({
-          blueprintId: `continuous-${header.key}`,
-          assessmentName: header.assessmentName || header.label || header.key,
-          totalMarks: Number(continuousRow[header.key] || 0),
-          maxMarks: Number(header.maxMarks || 0),
-        }))
-      : [];
+    const assessmentTotals = [];
+    let courseObtained = 0;
+    let studentContinuousAssessment = null;
+
+    if (isLabCourse) {
+      const marksheetRow = marksheetContinuousByStudent.get(student.studentId) || {};
+      const clpRow = labClpStudentMap.get(student.studentId) || {
+        values: {},
+        total: 0,
+        attendance: null,
+      };
+      const attendance = round2(
+        clpRow.attendance === null || clpRow.attendance === undefined
+          ? Number(marksheetRow.attendance || 0)
+          : Number(clpRow.attendance || 0)
+      );
+      if (totalsByCo[labAttendanceCoCode] !== undefined) {
+        totalsByCo[labAttendanceCoCode] = round2(totalsByCo[labAttendanceCoCode] + attendance);
+      }
+
+      const resolvedClpValues = {};
+      let clpTotal = 0;
+      for (const item of labClpItems) {
+        const value = item.isAggregateFallback
+          ? round2(Number(marksheetRow.labEvaluation || 0))
+          : round2(Number(clpRow.values?.[item.key] ?? 0));
+        resolvedClpValues[item.key] = value;
+        clpTotal = round2(clpTotal + value);
+        const coCode = String(item.coCode || '').trim().toUpperCase();
+        if (totalsByCo[coCode] !== undefined) {
+          totalsByCo[coCode] = round2(totalsByCo[coCode] + value);
+        }
+      }
+
+      studentContinuousAssessment = { attendance };
+      for (const group of labClpGroups.values()) {
+        const value = round2(
+          group.itemKeys.reduce((sum, key) => sum + Number(resolvedClpValues[key] || 0), 0)
+        );
+        studentContinuousAssessment[group.key] = value;
+      }
+      studentContinuousAssessment.total = round2(attendance + clpTotal);
+      courseObtained = studentContinuousAssessment.total;
+      assessmentTotals.push(
+        { blueprintId: 'continuous-attendance', assessmentName: 'Attendance', totalMarks: attendance, maxMarks: 5 },
+        { blueprintId: 'continuous-clp', assessmentName: 'CLP', totalMarks: clpTotal, maxMarks: round2(labContinuousMaxMarks - 5) }
+      );
+    }
 
     for (const bp of calculationBlueprints) {
       const saved = markMap.get(`${student.studentId}__${String(bp._id)}`);
@@ -185,9 +278,7 @@ const buildOutputData = async (courseId) => {
       }
 
       blueprintTotal = round2(blueprintTotal);
-      if (!useFixedContinuousAssessment || examBlueprintIds.has(String(bp._id))) {
-        courseObtained = round2(courseObtained + blueprintTotal);
-      }
+      courseObtained = round2(courseObtained + blueprintTotal);
       assessmentTotals.push({
         blueprintId: String(bp._id),
         assessmentName: bp.assessmentName,
@@ -221,17 +312,7 @@ const buildOutputData = async (courseId) => {
       email: student.email,
       courseObtained,
       courseMaxMarks: round2(totalPossibleMarks),
-      continuousAssessment: useFixedContinuousAssessment
-        ? {
-            ...Object.fromEntries(
-              continuousHeaders.map((header) => [
-                header.key,
-                round2(continuousRow[header.key]),
-              ])
-            ),
-            total: round2(continuousRow.total),
-          }
-        : null,
+      continuousAssessment: isLabCourse ? studentContinuousAssessment : null,
       totalPercent,
       scaledTotal,
       grade,
@@ -319,7 +400,25 @@ const buildOutputData = async (courseId) => {
     totalStudents,
     totalPossibleMarks: round2(totalPossibleMarks),
     obeTotalPossibleMarks: round2(obeTotalPossibleMarks),
-    continuousAssessment,
+    continuousAssessment: isLabCourse
+      ? {
+          enabled: true,
+          source: labClp?.items?.length ? 'clp-mapping' : 'course-marks',
+          courseType: 'lab',
+          headers: labContinuousHeaders,
+          totalMarks: round2(labContinuousMaxMarks),
+          students: studentRows.map((row) => ({
+            studentId: row.studentId,
+            ...(row.continuousAssessment || {}),
+          })),
+        }
+      : null,
+    labClp: isLabCourse
+      ? {
+          ...(labClp || {}),
+          items: labClpItems,
+        }
+      : null,
     blueprints: calculationBlueprints,
     students: studentRows,
     coAttainment,

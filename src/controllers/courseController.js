@@ -5,6 +5,9 @@ const Assessment = require('../models/Assessment');
 const Enrollment = require('../models/Enrollment');
 const Mark = require('../models/Mark');
 const SelfStudyBillConfig = require('../models/SelfStudyBillConfig');
+const CourseFileConfig = require('../models/CourseFileConfig');
+const CourseFileDocument = require('../models/CourseFileDocument');
+const { deleteCourseFileObject } = require('../utils/courseFileStorage');
 const {
   normalizeShift,
   isProgramAllowedForShift,
@@ -471,11 +474,25 @@ const deleteCourse = async (req, res) => {
 
     const courseId = course._id;
 
+    // Clean course-file storage objects owned by this feature before removing
+    // the metadata. Imported student lab submissions are references to the
+    // original submission object and must not be deleted here.
+    const courseFileDocs = await CourseFileDocument.find({ course: courseId })
+      .select("storagePath sourceKind")
+      .lean();
+    await Promise.allSettled(
+      courseFileDocs
+        .filter((doc) => doc.storagePath && doc.sourceKind !== "lab_submission")
+        .map((doc) => deleteCourseFileObject(doc.storagePath))
+    );
+
     await Promise.all([
       Assessment.deleteMany({ course: courseId }),
       Enrollment.deleteMany({ course: courseId }),
       Mark.deleteMany({ course: courseId }),
       SelfStudyBillConfig.deleteMany({ course: courseId }),
+      CourseFileDocument.deleteMany({ course: courseId }),
+      CourseFileConfig.deleteMany({ course: courseId }),
       // Complaint && Complaint.deleteMany({ course: courseId }),
     ]);
 

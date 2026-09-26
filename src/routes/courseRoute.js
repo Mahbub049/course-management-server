@@ -65,6 +65,12 @@ const {
 } = require('../controllers/obeOutputController');
 
 const {
+  getObeClp,
+  saveObeClpSetup,
+  saveObeClpMarks,
+} = require('../controllers/obeClpController');
+
+const {
   reuseObeData,
 } = require('../controllers/obeReuseController');
 
@@ -117,6 +123,21 @@ const {
   updateSelfStudyBillIntakes,
   downloadSelfStudyBill,
 } = require("../controllers/selfStudyBillController");
+
+
+const { courseFileUpload } = require("../middleware/courseFileUploadMiddleware");
+const {
+  getCourseFileState,
+  saveCourseFileSetup,
+  saveCourseFileMappings,
+  saveCourseFileSelection,
+  uploadCourseFileDocuments,
+  importLabSubmissionToCourseFile,
+  updateCourseFileDocument,
+  deleteCourseFileDocument,
+  downloadCourseFileDocument,
+  convertCourseFileOfficeToPdf,
+} = require("../controllers/courseFileController");
 
 const {
   getTeacherProjectSyncState,
@@ -198,6 +219,10 @@ router.get('/:courseId/obe/marks', ...teacherOnly, getObeMarkEntry);
 router.post('/:courseId/obe/marks', ...teacherOnly, saveObeMarks);
 router.get('/:courseId/obe/output', ...teacherOnly, getObeOutput);
 
+router.get('/:courseId/obe/clp', ...teacherOnly, getObeClp);
+router.put('/:courseId/obe/clp', ...teacherOnly, saveObeClpSetup);
+router.post('/:courseId/obe/clp/marks', ...teacherOnly, saveObeClpMarks);
+
 router.get("/:courseId/obe/export-payload", ...teacherOnly, getObeExportPayload);
 router.get("/:courseId/obe/crr/download", ...teacherOnly, downloadCourseReviewReport);
 // ===================================================
@@ -226,6 +251,42 @@ router.post("/:courseId/materials", ...teacherOnly, createCourseMaterial);
 router.put("/materials/:materialId", ...teacherOnly, updateCourseMaterial);
 router.delete("/materials/:materialId", ...teacherOnly, deleteCourseMaterial);
 
+
+
+// ===================================================
+// COURSE FILE PREPARATION (Day courses only)
+// ===================================================
+router.get("/:courseId/course-file", ...teacherOnly, getCourseFileState);
+router.put("/:courseId/course-file/setup", ...teacherOnly, saveCourseFileSetup);
+router.put("/:courseId/course-file/mappings", ...teacherOnly, saveCourseFileMappings);
+router.put("/:courseId/course-file/selection", ...teacherOnly, saveCourseFileSelection);
+router.post("/:courseId/course-file/convert-office-pdf", ...teacherOnly, courseFileUpload.single("file"), convertCourseFileOfficeToPdf);
+router.post(
+  "/:courseId/course-file/documents",
+  ...teacherOnly,
+  courseFileUpload.array("files", 40),
+  uploadCourseFileDocuments
+);
+router.post(
+  "/:courseId/course-file/import-submission",
+  ...teacherOnly,
+  importLabSubmissionToCourseFile
+);
+router.patch(
+  "/:courseId/course-file/documents/:documentId",
+  ...teacherOnly,
+  updateCourseFileDocument
+);
+router.get(
+  "/:courseId/course-file/documents/:documentId/download",
+  ...teacherOnly,
+  downloadCourseFileDocument
+);
+router.delete(
+  "/:courseId/course-file/documents/:documentId",
+  ...teacherOnly,
+  deleteCourseFileDocument
+);
 
 // ===================================================
 // ✅ PROJECT GROUPS (Teacher)
