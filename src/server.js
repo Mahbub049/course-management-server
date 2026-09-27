@@ -52,6 +52,10 @@ const allowedOrigins = new Set([
 function isAllowedOrigin(origin) {
   if (allowedOrigins.has(origin)) return true;
 
+  // Allow unpacked/installed Chrome extensions (Chrome extension IDs are 32 chars, a-p).
+  // Authentication and protected API routes still require the normal portal JWT.
+  if (/^chrome-extension:\/\/[a-p]{32}$/.test(origin)) return true;
+
   // Vite may automatically use another local port when 5173 is occupied.
   return /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin);
 }
