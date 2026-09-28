@@ -218,6 +218,7 @@ const buildOutputData = async (courseId) => {
     const assessmentTotals = [];
     let courseObtained = 0;
     let studentContinuousAssessment = null;
+    let hasIncompleteExam = false;
 
     if (isLabCourse) {
       const marksheetRow = marksheetContinuousByStudent.get(student.studentId) || {};
@@ -266,6 +267,12 @@ const buildOutputData = async (courseId) => {
 
     for (const bp of calculationBlueprints) {
       const saved = markMap.get(`${student.studentId}__${String(bp._id)}`);
+      if (
+        isExamBlueprint(bp) &&
+        ['absent', 'incomplete'].includes(String(saved?.status || '').trim().toLowerCase())
+      ) {
+        hasIncompleteExam = true;
+      }
       const entryMap = new Map((saved?.entries || []).map((entry) => [entry.itemKey, Number(entry.obtainedMarks || 0)]));
       let blueprintTotal = 0;
 
@@ -289,7 +296,7 @@ const buildOutputData = async (courseId) => {
 
     const totalPercent = totalPossibleMarks > 0 ? round2((courseObtained / totalPossibleMarks) * 100) : 0;
     const scaledTotal = round2((totalPercent / 100) * 100);
-    const grade = gradeFromPercent(totalPercent);
+    const grade = hasIncompleteExam ? 'I' : gradeFromPercent(totalPercent);
 
     const coRows = outcomeList.map((co) => {
       const obtained = round2(totalsByCo[co.code] || 0);
@@ -383,7 +390,7 @@ const buildOutputData = async (courseId) => {
   const poAttainment = buildTargetRows(poStatements, 'PO');
   const psoAttainment = buildTargetRows(psoStatements, 'PSO');
 
-  const gradeBuckets = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'D', 'F'];
+  const gradeBuckets = ['A+', 'A', 'A-', 'B+', 'B', 'B-', 'C+', 'C', 'D', 'F', 'I'];
   const gradeDistribution = gradeBuckets.map((grade) => ({ grade, count: 0, percent: 0 }));
   const gradeMap = new Map(gradeDistribution.map((row) => [row.grade, row]));
   for (const student of studentRows) {

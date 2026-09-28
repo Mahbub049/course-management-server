@@ -95,7 +95,30 @@ const saveObeMarks = async (req, res) => {
         .map((blueprint) => [String(blueprint._id), blueprint])
     );
 
-    const bulkOps = [];
+    const examBlueprintIds = blueprints
+      .filter((blueprint) => ["mid", "final"].includes(String(blueprint.assessmentType || "").trim().toLowerCase()))
+      .map((blueprint) => blueprint._id);
+    const existingExamMarks = examBlueprintIds.length
+      ? await ObeStudentMark.find({
+          course: courseId,
+          blueprint: { $in: examBlueprintIds },
+        }).select('student blueprint status')
+      : [];
+
+    const examStatusByRecord = new Map();
+
+    for (const savedMark of existingExamMarks) {
+      const blueprint = blueprintMap.get(String(savedMark.blueprint));
+      const type = String(blueprint?.assessmentType || '').trim().toLowerCase();
+      if (!['mid', 'final'].includes(type)) continue;
+      examStatusByRecord.set(`${String(savedMark.student)}__${String(savedMark.blueprint)}`, {
+        studentId: String(savedMark.student),
+        type,
+        absent: ['absent', 'incomplete'].includes(String(savedMark.status || '').toLowerCase()),
+      });
+    }
+
+    const preparedRecords = [];
 
     for (const record of records) {
       const studentId = String(record?.studentId || '');
@@ -114,10 +137,55 @@ const saveObeMarks = async (req, res) => {
         });
       }
 
-      const itemMap = new Map((blueprint.items || []).map((item) => [item.key, item]));
-      const requestedStatus = ['absent', 'incomplete'].includes(record?.status) && ['mid', 'final'].includes(String(blueprint.assessmentType || '').toLowerCase())
-        ? record.status
-        : 'present';
+      const assessmentType = String(blueprint.assessmentType || '').trim().toLowerCase();
+      const rawStatus = String(record?.status || 'present').trim().toLowerCase();
+      const asksForAbsence = ['absent', 'incomplete'].includes(rawStatus);
+      if (asksForAbsence && !['mid', 'final'].includes(assessmentType)) {
+        return res.status(400).json({
+          message: 'Absent is allowed only for Mid or Final in OBE marks.',
+        });
+      }
+
+      const requestedStatus = asksForAbsence ? rawStatus : 'present';
+      if (['mid', 'final'].includes(assessmentType)) {
+        examStatusByRecord.set(`${studentId}__${blueprintId}`, {
+          studentId,
+          type: assessmentType,
+          absent: asksForAbsence,
+        });
+      }
+
+      preparedRecords.push({
+        record,
+        studentId,
+        blueprintId,
+        blueprint,
+        requestedStatus,
+      });
+    }
+
+    const examAbsenceByStudent = new Map();
+    for (const state of examStatusByRecord.values()) {
+      if (!state.absent) continue;
+      if (!examAbsenceByStudent.has(state.studentId)) {
+        examAbsenceByStudent.set(state.studentId, { mid: false, final: false });
+      }
+      examAbsenceByStudent.get(state.studentId)[state.type] = true;
+    }
+
+    for (const [studentId, state] of examAbsenceByStudent.entries()) {
+      if (state.mid && state.final) {
+        return res.status(400).json({
+          message: 'A student cannot be marked Absent in both Mid and Final. Keep A in only one exam and enter 0 or numeric marks in the other.',
+          studentId,
+        });
+      }
+    }
+
+    const bulkOps = [];
+
+    for (const prepared of preparedRecords) {
+      const { record, studentId, blueprintId, blueprint, requestedStatus } = prepared;
       const normalizedEntries = [];
       let totalMarks = 0;
 
