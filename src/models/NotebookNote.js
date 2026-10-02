@@ -142,6 +142,21 @@ const groupRowSchema = new mongoose.Schema(
   { _id: false }
 );
 
+
+const checklistItemSchema = new mongoose.Schema(
+  {
+    id: { type: String, trim: true, default: "" },
+    title: { type: String, trim: true, default: "Checklist item" },
+    details: { type: String, default: "" },
+    date: { type: String, trim: true, default: "" },
+    time: { type: String, trim: true, default: "" },
+    completed: { type: Boolean, default: false },
+    completedAt: { type: Date, default: null },
+    sortOrder: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const markSyncMappingSchema = new mongoose.Schema(
   {
     id: { type: String, trim: true, required: true },
@@ -192,7 +207,7 @@ const notebookNoteSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ["evaluation", "simple"],
+      enum: ["evaluation", "simple", "checklist"],
       required: true,
       default: "simple",
       index: true,
@@ -226,6 +241,15 @@ const notebookNoteSchema = new mongoose.Schema(
     content: {
       type: String,
       default: "",
+    },
+    checklistViewMode: {
+      type: String,
+      enum: ["serial", "date", "month"],
+      default: "serial",
+    },
+    checklistItems: {
+      type: [checklistItemSchema],
+      default: [],
     },
   },
   { timestamps: true }

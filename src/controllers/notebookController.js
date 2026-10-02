@@ -277,6 +277,38 @@ const sanitizeGroupRows = (rows = []) => {
   });
 };
 
+const sanitizeChecklistViewMode = (value) => {
+  const mode = String(value || "serial").toLowerCase();
+  return ["serial", "date", "month"].includes(mode) ? mode : "serial";
+};
+
+const sanitizeChecklistItems = (items = []) => {
+  if (!Array.isArray(items)) return [];
+
+  const usedIds = new Set();
+  return items.map((item, index) => {
+    let id = cleanString(item?.id, `item_${index + 1}`);
+    if (usedIds.has(id)) id = `${id}_${index + 1}`;
+    usedIds.add(id);
+
+    const numericOrder = Number(item?.sortOrder);
+    const completed = Boolean(item?.completed);
+    const completedAt = completed && item?.completedAt ? new Date(item.completedAt) : null;
+
+    return {
+      id,
+      title: cleanString(item?.title, "Checklist item"),
+      details: typeof item?.details === "string" ? item.details : "",
+      date: cleanString(item?.date),
+      time: cleanString(item?.time),
+      completed,
+      completedAt:
+        completedAt && !Number.isNaN(completedAt.getTime()) ? completedAt : completed ? new Date() : null,
+      sortOrder: Number.isFinite(numericOrder) ? numericOrder : index + 1,
+    };
+  });
+};
+
 const formatCourse = (course) => {
   if (!course) return null;
   return {
@@ -421,7 +453,7 @@ exports.getNotebookNotes = async (req, res) => {
 
     const filter = { teacher: teacherId };
 
-    if (["evaluation", "simple"].includes(type)) {
+    if (["evaluation", "simple", "checklist"].includes(type)) {
       filter.type = type;
     }
 
@@ -448,12 +480,18 @@ exports.getNotebookNotes = async (req, res) => {
 exports.createNotebookNote = async (req, res) => {
   try {
     const teacherId = req.user.userId;
-    const type = req.body.type === "evaluation" ? "evaluation" : "simple";
+    const requestedType = String(req.body.type || "simple").toLowerCase();
+    const type = ["evaluation", "simple", "checklist"].includes(requestedType)
+      ? requestedType
+      : "simple";
     const settings = sanitizeSettings(req.body.settings || {});
-    const title = cleanString(
-      req.body.title,
-      type === "evaluation" ? "Evaluation Sheet" : "Simple Note"
-    );
+    const defaultTitle =
+      type === "evaluation"
+        ? "Evaluation Sheet"
+        : type === "checklist"
+          ? "Checklist"
+          : "Simple Note";
+    const title = cleanString(req.body.title, defaultTitle);
     const requestedScope =
       type === "evaluation" && !settings.groupWise && req.body.courseScope === "all"
         ? "all"
@@ -483,6 +521,10 @@ exports.createNotebookNote = async (req, res) => {
       if (!course) {
         return res.status(404).json({ message: "Selected course was not found." });
       }
+    }
+
+    if (type === "checklist") {
+      course = null;
     }
 
     if (type === "evaluation" && requestedScope === "single" && !course) {
@@ -518,6 +560,14 @@ exports.createNotebookNote = async (req, res) => {
         type === "simple" && typeof req.body.content === "string"
           ? req.body.content
           : "",
+      checklistViewMode:
+        type === "checklist"
+          ? sanitizeChecklistViewMode(req.body.checklistViewMode)
+          : "serial",
+      checklistItems:
+        type === "checklist"
+          ? sanitizeChecklistItems(req.body.checklistItems || [])
+          : [],
     });
 
     const populated = await NotebookNote.findById(note._id).populate(
@@ -598,6 +648,14 @@ exports.updateNotebookNote = async (req, res) => {
       note.content = typeof req.body.content === "string" ? req.body.content : "";
     }
 
+    if (note.type === "checklist" && req.body.checklistViewMode !== undefined) {
+      note.checklistViewMode = sanitizeChecklistViewMode(req.body.checklistViewMode);
+    }
+
+    if (note.type === "checklist" && req.body.checklistItems !== undefined) {
+      note.checklistItems = sanitizeChecklistItems(req.body.checklistItems);
+    }
+
     if (req.body.evaluationRows !== undefined) {
       note.evaluationRows = sanitizeEvaluationRows(req.body.evaluationRows);
     }
@@ -638,6 +696,15 @@ exports.updateNotebookNote = async (req, res) => {
     if (note.type === "evaluation" && note.courseScope === "all") {
       note.course = null;
       note.markSyncMappings = [];
+    } else if (note.type === "checklist") {
+      note.course = null;
+      note.courseScope = "single";
+      note.scopeSemester = "";
+      note.scopeYear = "";
+      note.groupRows = [];
+      note.evaluationRows = [];
+      note.markSyncMappings = [];
+      note.content = "";
     } else if (note.type !== "evaluation") {
       note.courseScope = "single";
       note.scopeSemester = "";
