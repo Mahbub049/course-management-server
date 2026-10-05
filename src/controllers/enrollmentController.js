@@ -61,8 +61,25 @@ exports.addStudentToCourse = async (req, res) => {
 
     const emailValue = normalizeEmail(email);
 
-    // Try to find existing user
+    // Find an existing student account by roll. A student may exist globally
+    // because they are enrolled in another teacher's course; that must NOT block
+    // adding them here. We only block when they are already in this exact course.
     let student = await User.findOne({ username: roll, role: "student" });
+
+    if (student) {
+      const existingEnrollment = await Enrollment.findOne({
+        course: courseId,
+        student: student._id,
+      }).select("_id");
+
+      if (existingEnrollment) {
+        return res.status(409).json({
+          code: "STUDENT_ALREADY_ENROLLED",
+          message: `Student ${roll} is already enrolled in this course. Remove the student first before adding again.`,
+          enrollmentId: existingEnrollment._id,
+        });
+      }
+    }
 
     let temporaryPassword = null;
     let note = "";
@@ -93,28 +110,27 @@ exports.addStudentToCourse = async (req, res) => {
       note = "Existing student account found";
     }
 
-    // Check if already enrolled
-    let enrollment = await Enrollment.findOne({
-      course: courseId,
-      student: student._id,
-    });
-
-    if (!enrollment) {
+    let enrollment;
+    try {
       enrollment = await Enrollment.create({
         course: courseId,
         student: student._id,
         temporaryPassword: temporaryPassword || undefined,
       });
+    } catch (enrollmentError) {
+      // Protect against a race where another request enrolled the same student
+      // after the availability check but before this insert.
+      if (enrollmentError?.code === 11000) {
+        return res.status(409).json({
+          code: "STUDENT_ALREADY_ENROLLED",
+          message: `Student ${roll} is already enrolled in this course. Remove the student first before adding again.`,
+        });
+      }
+      throw enrollmentError;
+    }
 
-      if (!temporaryPassword) {
-        note = "Existing account enrolled";
-      }
-    } else {
-      // If already enrolled and we created a new password (rare case), keep it stored
-      if (temporaryPassword) {
-        enrollment.temporaryPassword = temporaryPassword;
-        await enrollment.save();
-      }
+    if (!temporaryPassword) {
+      note = "Existing account enrolled";
     }
 
     return res.json({
