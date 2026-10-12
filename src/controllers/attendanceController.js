@@ -399,6 +399,48 @@ const getStudentAttendanceSheet = async (req, res) => {
   }
 };
 
+// -------------------- RECORDED SESSIONS (teacher) --------------------
+// Lightweight dates + periods only: used by Update, Delete and Copy From.
+// A legacy multi-period document can be copied, but cannot safely be edited
+// or deleted one period at a time with the existing day endpoints.
+const getAttendanceSessions = async (req, res) => {
+  try {
+    const teacherId = req.user?.userId || req.user?.id;
+    if (!teacherId) return res.status(401).json({ message: "Unauthorized" });
+
+    const { courseId } = req.query;
+    if (!courseId) return res.status(400).json({ message: "courseId is required" });
+    const course = await Course.findOne({ _id: courseId, createdBy: teacherId });
+    if (!course) return res.status(404).json({ message: "Course not found for this teacher" });
+
+    // Align with the attendance sheet's course-level lookup, including older
+    // records imported with a stale teacher reference.
+    const docs = await Attendance.find({ course: course._id })
+      .select("date period numClasses").lean();
+    const byKey = new Map();
+    docs.forEach((doc) => {
+      const dateValue = doc.date instanceof Date ? doc.date : new Date(doc.date);
+      if (!dateValue || Number.isNaN(dateValue.getTime())) return;
+      const date = dateValue.toISOString().slice(0, 10);
+      const period = Number(doc.period);
+      const isPeriodWise = Number.isInteger(period) && period >= 1;
+      const periods = isPeriodWise ? [period] : Array.from({ length: Math.max(1, Math.min(20, Number(doc.numClasses) || 1)) }, (_, i) => i + 1);
+      periods.forEach((p) => {
+        const key = `${date}|${p}`;
+        const current = byKey.get(key);
+        if (!current || (!current.editable && isPeriodWise)) {
+          byKey.set(key, { date, period: p, editable: isPeriodWise });
+        }
+      });
+    });
+    const sessions = [...byKey.values()].sort((a, b) => a.date.localeCompare(b.date) || a.period - b.period);
+    return res.json({ sessions });
+  } catch (err) {
+    console.error("getAttendanceSessions error:", err);
+    return res.status(500).json({ message: "Failed to fetch recorded attendance dates" });
+  }
+};
+
 // -------------------- GET (day + period) --------------------
 // GET /api/attendance/day?courseId=...&date=YYYY-MM-DD&period=1
 const getAttendanceByDay = async (req, res) => {
@@ -420,7 +462,6 @@ const getAttendanceByDay = async (req, res) => {
     if (period) {
       const p = Number(period);
       const doc = await Attendance.findOne({
-        teacher: teacherId,
         course: courseId,
         date: { $gte: start, $lte: end },
         period: p,
@@ -439,7 +480,6 @@ const getAttendanceByDay = async (req, res) => {
 
     // Legacy fallback: find old doc without period
     const legacy = await Attendance.findOne({
-      teacher: teacherId,
       course: courseId,
       date: { $gte: start, $lte: end },
       period: { $exists: false },
@@ -481,7 +521,6 @@ const updateAttendanceByDay = async (req, res) => {
     const p = Number(period);
 
     const doc = await Attendance.findOne({
-      teacher: teacherId,
       course: courseId,
       date: { $gte: start, $lte: end },
       period: p,
@@ -550,7 +589,6 @@ const copyAttendancePeriod = async (req, res) => {
 
     const sourceRange = dayRange(sourceDate);
     let source = await Attendance.findOne({
-      teacher: teacherId,
       course: courseId,
       date: { $gte: sourceRange.start, $lte: sourceRange.end },
       period: sourceP,
@@ -560,7 +598,6 @@ const copyAttendancePeriod = async (req, res) => {
     // every represented period has the same attendance records.
     if (!source) {
       const legacy = await Attendance.findOne({
-        teacher: teacherId,
         course: courseId,
         date: { $gte: sourceRange.start, $lte: sourceRange.end },
         period: { $exists: false },
@@ -584,7 +621,6 @@ const copyAttendancePeriod = async (req, res) => {
 
     const targetRange = dayRange(targetDate);
     let target = await Attendance.findOne({
-      teacher: teacherId,
       course: courseId,
       date: { $gte: targetRange.start, $lte: targetRange.end },
       period: targetP,
@@ -657,7 +693,6 @@ const deleteAttendanceByDay = async (req, res) => {
     const p = Number(period);
 
     const deleted = await Attendance.findOneAndDelete({
-      teacher: teacherId,
       course: courseId,
       date: { $gte: start, $lte: end },
       period: p,
@@ -686,6 +721,7 @@ module.exports = {
   getAttendanceSheet,
   getStudentAttendanceSheet,
   getAttendanceByDay,
+  getAttendanceSessions,
   updateAttendanceByDay,
   copyAttendancePeriod,
   deleteAttendanceByDay,

@@ -7,6 +7,7 @@ const {
   getAttendanceSheet,
   getStudentAttendanceSheet,
   getAttendanceByDay,
+  getAttendanceSessions,
   updateAttendanceByDay,
   copyAttendancePeriod,
   deleteAttendanceByDay,
@@ -26,6 +27,7 @@ router.post("/bulk", authMiddleware, requireTeacher, createAttendanceBulk);
 router.post("/copy", authMiddleware, requireTeacher, copyAttendancePeriod);
 
 router.get("/sheet", authMiddleware, requireTeacher, getAttendanceSheet);
+router.get("/sessions", authMiddleware, requireTeacher, getAttendanceSessions);
 router.get("/student-sheet", authMiddleware, requireStudent, getStudentAttendanceSheet);
 
 // Teacher: load existing attendance of a day (period-wise)
