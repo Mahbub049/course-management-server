@@ -18,6 +18,7 @@ const Course = require("../models/Course");
 const Enrollment = require("../models/Enrollment");
 const Assessment = require("../models/Assessment");
 const Attendance = require("../models/Attendance");
+const { withAttendanceStats } = require("../utils/issueAttendanceStats");
 
 // helper: basic YYYY-MM-DD check
 function isValidYMD(s) {
@@ -165,7 +166,7 @@ const createStudentComplaint = async (req, res) => {
 
     // return populated response (nice for frontend immediate UI)
     const populated = await Complaint.findById(complaint._id)
-      .populate("course", "code title section year semester")
+      .populate("course", "code title section intake year semester")
       .populate("assessment", "name")
       .populate("student", "name roll username");
 
@@ -193,7 +194,7 @@ const getStudentComplaints = async (req, res) => {
     }
 
     const complaints = await Complaint.find({ student: req.user.userId })
-      .populate("course", "code title section year semester")
+      .populate("course", "code title section intake year semester")
       .populate("assessment", "name")
       .sort({ createdAt: -1 });
 
@@ -228,7 +229,7 @@ const getTeacherComplaints = async (req, res) => {
     })
       .populate({
         path: "course",
-        select: "code title section year semester archived createdBy",
+        select: "code title section intake year semester archived createdBy",
         match: {
           $or: [
             { archived: false },
@@ -242,7 +243,7 @@ const getTeacherComplaints = async (req, res) => {
 
     const filteredComplaints = complaints.filter((c) => c.course);
 
-    res.json(filteredComplaints);
+    res.json(await withAttendanceStats(filteredComplaints));
   } catch (err) {
     console.error("getTeacherComplaints error", err);
     res.status(500).json({ message: "Server error" });
@@ -286,10 +287,10 @@ const replyToComplaint = async (req, res) => {
 
     const populated = await Complaint.findById(complaint._id)
       .populate("student", "name roll username")
-      .populate("course", "code title section year semester")
+      .populate("course", "code title section intake year semester")
       .populate("assessment", "name");
 
-    res.json(populated);
+    res.json((await withAttendanceStats([populated]))[0]);
   } catch (err) {
     console.error("replyToComplaint error", err);
     res.status(500).json({ message: "Server error" });
@@ -372,12 +373,12 @@ const resolveAttendanceComplaint = async (req, res) => {
 
     const populated = await Complaint.findById(complaint._id)
       .populate("student", "name username")
-      .populate("course", "code title section year semester")
+      .populate("course", "code title section intake year semester")
       .populate("assessment", "name");
 
     res.json({
       message: "Attendance updated and issue resolved successfully",
-      complaint: populated,
+      complaint: (await withAttendanceStats([populated]))[0],
     });
   } catch (err) {
     console.error("resolveAttendanceComplaint error:", err);
