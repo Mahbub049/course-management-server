@@ -229,12 +229,20 @@ async function buildSuggestions(courseId, assessments, config) {
     projectReports: [],
   };
 
+  // OBE is the canonical source of Class Tests for course-file evidence.
+  // A Class Test fetched/mapped into the normal marksheet must not become a
+  // second question paper or sample group (names may differ, e.g. CTI/CT-01).
+  // Courses without any OBE CT blueprints still use their regular assessments.
+  const hasObeClassTests = obeBlueprints.some(
+    (blueprint) => String(blueprint.assessmentType || "").trim().toLowerCase() === "ct"
+  );
+
   assessments.forEach((assessment) => {
     const flags = classifyAssessment(assessment);
     const aid = String(assessment._id);
     const entries = regularEntries(assessment);
     if (flags.isAssignment) result.assignment.push(formatSuggestion(`assessment:${aid}`, assessment.name, aid, entries));
-    if (flags.isCt) result.classTests.push(formatSuggestion(`assessment:${aid}`, assessment.name, aid, entries));
+    if (flags.isCt && !hasObeClassTests) result.classTests.push(formatSuggestion(`assessment:${aid}`, assessment.name, aid, entries));
     if (flags.isMid) result.mid.push(formatSuggestion(`assessment:${aid}`, assessment.name, aid, entries));
     if (flags.isFinal) result.final.push(formatSuggestion(`assessment:${aid}`, assessment.name, aid, entries));
     if (flags.isLabExam || ((flags.isMid || flags.isFinal) && String(assessment.structureType || "").includes("lab"))) {
