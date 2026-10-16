@@ -191,7 +191,15 @@ const saveObeMarks = async (req, res) => {
 
       for (const item of blueprint.items || []) {
         const matching = (Array.isArray(record.entries) ? record.entries : []).find((entry) => entry?.itemKey === item.key);
-        const numeric = requestedStatus === 'present' ? Number(matching?.obtainedMarks ?? 0) : 0;
+        const rawMark = matching?.obtainedMarks;
+        // A blank question is not a zero. Omit it from the saved entries;
+        // a genuine numeric 0 must remain an explicit saved mark.
+        if (requestedStatus === 'present' &&
+            (rawMark === null || rawMark === undefined || String(rawMark).trim() === '')) {
+          continue;
+        }
+        if (requestedStatus !== 'present') continue;
+        const numeric = Number(rawMark);
         if (!Number.isFinite(numeric) || numeric < 0 || numeric > Number(item.marks || 0)) {
           return res.status(400).json({
             message: `Invalid obtained marks for ${blueprint.assessmentName} - ${item.label}.`,
@@ -212,22 +220,29 @@ const saveObeMarks = async (req, res) => {
         return res.status(400).json({ message: `Total marks exceed ${blueprint.assessmentName} total.` });
       }
 
-      bulkOps.push({
-        updateOne: {
-          filter: { course: courseId, student: studentId, blueprint: blueprintId },
-          update: {
-            $set: {
-              course: courseId,
-              student: studentId,
-              blueprint: blueprintId,
-              status: requestedStatus,
-              entries: normalizedEntries,
-              totalMarks,
+      const filter = { course: courseId, student: studentId, blueprint: blueprintId };
+      if (requestedStatus === 'present' && normalizedEntries.length === 0) {
+        // Clearing every question must also clear previously saved zeros/marks.
+        // No database row means this student's assessment is still blank.
+        bulkOps.push({ deleteOne: { filter } });
+      } else {
+        bulkOps.push({
+          updateOne: {
+            filter,
+            update: {
+              $set: {
+                course: courseId,
+                student: studentId,
+                blueprint: blueprintId,
+                status: requestedStatus,
+                entries: normalizedEntries,
+                totalMarks,
+              },
             },
+            upsert: true,
           },
-          upsert: true,
-        },
-      });
+        });
+      }
     }
 
     if (bulkOps.length) await ObeStudentMark.bulkWrite(bulkOps, { ordered: false });

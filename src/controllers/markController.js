@@ -811,14 +811,12 @@ const syncMarksFromObe = async (req, res) => {
         course: courseId,
         blueprint: { $in: blueprintIds },
         student: { $in: [...enrolledStudentIds] },
-      }).select("student blueprint totalMarks entries"),
-      overwriteExisting
-        ? Promise.resolve([])
-        : Mark.find({
-            course: courseId,
-            assessment: { $in: assessmentIds },
-            student: { $in: [...enrolledStudentIds] },
-          }).select("student assessment"),
+      }).select("student blueprint totalMarks entries status"),
+      Mark.find({
+        course: courseId,
+        assessment: { $in: assessmentIds },
+        student: { $in: [...enrolledStudentIds] },
+      }).select("student assessment"),
     ]);
 
     const existingKeySet = new Set(
@@ -826,86 +824,114 @@ const syncMarksFromObe = async (req, res) => {
         (row) => `${String(row.student)}__${String(row.assessment)}`
       )
     );
-    const matchByBlueprintId = new Map(
-      matches.map((match) => [String(match.blueprint._id), match])
-    );
     const importedCountByBlueprintId = new Map(
       matches.map((match) => [String(match.blueprint._id), 0])
     );
 
+    const obeMarkByKey = new Map(
+      obeMarks.map((row) => [
+        `${String(row.student)}__${String(row.blueprint)}`,
+        row,
+      ])
+    );
     const bulkOps = [];
     let protectedExistingRecords = 0;
+    let importedRecords = 0;
+    let clearedBlankRecords = 0;
 
-    for (const obeMark of obeMarks) {
-      const studentId = String(obeMark.student);
-      if (!enrolledStudentIds.has(studentId)) continue;
+    // Check every enrolled student against each mapped assessment. Blank OBE
+    // assessments have no saved row (or, for older data, an empty entries list).
+    // In overwrite mode, a blank must also clear an old normal marksheet value.
+    for (const match of matches) {
+      const blueprintId = String(match.blueprint._id);
+      const assessmentId = String(match.assessment._id);
+      for (const studentId of enrolledStudentIds) {
+        const existingKey = `${studentId}__${assessmentId}`;
+        const hasExisting = existingKeySet.has(existingKey);
+        if (!overwriteExisting && hasExisting) {
+          protectedExistingRecords += 1;
+          continue;
+        }
 
-      const match = matchByBlueprintId.get(String(obeMark.blueprint));
-      if (!match) continue;
-
-      const existingKey = `${studentId}__${String(match.assessment._id)}`;
-      if (!overwriteExisting && existingKeySet.has(existingKey)) {
-        protectedExistingRecords += 1;
-        continue;
-      }
-
-      const assessmentFullMarks = Number(match.assessment.fullMarks || 0);
-      let subMarks = [];
-      let obtainedMarks = round2(obeMark.totalMarks);
-
-      if (match.assessment?.structureType === "lab_final") {
-        const obeEntryMap = new Map(
-          (obeMark.entries || []).map((entry) => [
-            String(entry.itemKey),
-            Number(entry.obtainedMarks || 0),
-          ])
+        const obeMark = obeMarkByKey.get(`${studentId}__${blueprintId}`);
+        const absent = ["absent", "incomplete"].includes(
+          String(obeMark?.status || "").toLowerCase()
+        );
+        const enteredItems = (obeMark?.entries || []).filter(
+          (entry) =>
+            entry?.obtainedMarks !== null &&
+            entry?.obtainedMarks !== undefined &&
+            String(entry.obtainedMarks).trim() !== ""
         );
 
-        subMarks = (match.structuredItemMapping || []).map((item) => ({
-          key: item.assessmentItemKey,
-          obtainedMarks: round2(
-            obeEntryMap.get(String(item.blueprintItemKey)) || 0
-          ),
-        }));
-        obtainedMarks = sumSubMarks(subMarks);
-      }
+        if (!absent && !enteredItems.length) {
+          if (overwriteExisting && hasExisting) {
+            bulkOps.push({
+              deleteOne: {
+                filter: { course: courseId, student: studentId, assessment: assessmentId },
+              },
+            });
+            clearedBlankRecords += 1;
+          }
+          continue;
+        }
 
-      if (
-        !Number.isFinite(obtainedMarks) ||
-        obtainedMarks < 0 ||
-        obtainedMarks > assessmentFullMarks
-      ) {
-        return res.status(400).json({
-          message: `${match.blueprint.assessmentName} contains a total that is outside the matched marksheet field limit.`,
-        });
-      }
+        const assessmentFullMarks = Number(match.assessment.fullMarks || 0);
+        let subMarks = [];
+        let obtainedMarks = round2(obeMark.totalMarks);
 
-      bulkOps.push({
-        updateOne: {
-          filter: {
-            course: courseId,
-            student: obeMark.student,
-            assessment: match.assessment._id,
-          },
-          update: {
-            $set: {
+        if (match.assessment?.structureType === "lab_final" && !absent) {
+          const obeEntryMap = new Map(
+            enteredItems.map((entry) => [String(entry.itemKey), Number(entry.obtainedMarks)])
+          );
+
+          // Leave unanswered lab sub-questions blank instead of making them 0.
+          subMarks = (match.structuredItemMapping || [])
+            .filter((item) => obeEntryMap.has(String(item.blueprintItemKey)))
+            .map((item) => ({
+              key: item.assessmentItemKey,
+              obtainedMarks: round2(obeEntryMap.get(String(item.blueprintItemKey))),
+            }));
+          obtainedMarks = sumSubMarks(subMarks);
+        }
+
+        if (
+          !Number.isFinite(obtainedMarks) ||
+          obtainedMarks < 0 ||
+          obtainedMarks > assessmentFullMarks
+        ) {
+          return res.status(400).json({
+            message: `${match.blueprint.assessmentName} contains a total that is outside the matched marksheet field limit.`,
+          });
+        }
+
+        bulkOps.push({
+          updateOne: {
+            filter: {
               course: courseId,
-              student: obeMark.student,
+              student: studentId,
               assessment: match.assessment._id,
-              obtainedMarks: ["absent", "incomplete"].includes(obeMark.status) ? 0 : obtainedMarks,
-              status: ["absent", "incomplete"].includes(obeMark.status) ? obeMark.status : "present",
-              subMarks: ["absent", "incomplete"].includes(obeMark.status) ? [] : subMarks,
             },
+            update: {
+              $set: {
+                course: courseId,
+                student: studentId,
+                assessment: match.assessment._id,
+                obtainedMarks: absent ? 0 : obtainedMarks,
+                status: absent ? obeMark.status : "present",
+                subMarks: absent ? [] : subMarks,
+              },
+            },
+            upsert: true,
           },
-          upsert: true,
-        },
-      });
+        });
 
-      const blueprintId = String(match.blueprint._id);
-      importedCountByBlueprintId.set(
-        blueprintId,
-        Number(importedCountByBlueprintId.get(blueprintId) || 0) + 1
-      );
+        importedRecords += 1;
+        importedCountByBlueprintId.set(
+          blueprintId,
+          Number(importedCountByBlueprintId.get(blueprintId) || 0) + 1
+        );
+      }
     }
 
     if (bulkOps.length > 0) {
@@ -940,16 +966,19 @@ const syncMarksFromObe = async (req, res) => {
 
     return res.json({
       message:
-        bulkOps.length > 0
-          ? `${bulkOps.length} student assessment total(s) were fetched from OBE/CO-PO.${
+        importedRecords > 0 || clearedBlankRecords > 0
+          ? `${importedRecords} student assessment total(s) were fetched from OBE/CO-PO.${
+              clearedBlankRecords > 0 ? ` ${clearedBlankRecords} previously saved marksheet cell(s) were cleared because OBE was blank.` : ""
+            }${
               overwriteExisting
-                ? " Existing values in the selected marksheet fields were replaced where OBE marks were available."
+                ? " Existing values were replaced only where OBE marks were entered."
                 : " Existing marks were kept and only empty assessment records were filled."
             }`
           : protectedExistingRecords > 0
             ? "All matching marksheet records already contained marks, so nothing was replaced."
-            : "Assessment fields matched, but there were no saved OBE student marks to import.",
-      importedRecords: bulkOps.length,
+            : "Assessment fields matched, but there were no entered OBE student marks to import.",
+      importedRecords,
+      clearedBlankRecords,
       protectedExistingRecords,
       overwriteExisting,
       matchedAssessments,

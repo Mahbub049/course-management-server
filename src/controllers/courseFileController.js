@@ -75,7 +75,7 @@ function classifyAssessment(assessment = {}) {
   return {
     isMid: name.includes("mid"),
     isFinal: name.includes("final"),
-    isCt: /(^|\b)ct([\s\-_]|$)|class\s*test|quiz\s*test|\bquiz\b/.test(name),
+    isCt: /(^|[^a-z])ct(?=\d|[\s_\-–—‑]|$)|class[\s\-_]*test|quiz[\s\-_]*test|\bquiz\b/.test(name),
     isAssignment: /assignment|presentation/.test(name),
     isAttendance: /attendance|attend|\batt\b/.test(name),
     isLabReport,
@@ -158,10 +158,12 @@ function formatSuggestion(scopeKey, title, assessmentId, entries = []) {
 }
 
 async function buildSuggestions(courseId, assessments, config) {
-  const [enrollments, marks, submissions] = await Promise.all([
+  const [enrollments, marks, submissions, obeBlueprints, obeMarks] = await Promise.all([
     Enrollment.find({ course: courseId }).populate("student", "name username").lean(),
     Mark.find({ course: courseId }).lean(),
     LabSubmission.find({ course: courseId, storageDeleted: { $ne: true } }).lean(),
+    ObeAssessmentBlueprint.find({ course: courseId }).sort({ order: 1, createdAt: 1 }).lean(),
+    ObeStudentMark.find({ course: courseId }).lean(),
   ]);
 
   const studentMap = new Map();
@@ -237,6 +239,46 @@ async function buildSuggestions(courseId, assessments, config) {
     if (flags.isFinal) result.final.push(formatSuggestion(`assessment:${aid}`, assessment.name, aid, entries));
     if (flags.isLabExam || ((flags.isMid || flags.isFinal) && String(assessment.structureType || "").includes("lab"))) {
       result.labExams.push(formatSuggestion(`assessment:${aid}`, assessment.name, aid, entries));
+    }
+  });
+
+  // OBE's assessment blueprints are separate from the regular Marks assessments.
+  // In particular, CT-1 may exist only in OBE, so source CT/mid/final/assignment
+  // candidates from this SAME course as a fallback. Never query sibling marks here.
+  const obeMarksByBlueprint = new Map();
+  obeMarks.forEach((row) => {
+    if (row.status !== "present") return;
+    const id = String(row.blueprint);
+    if (!obeMarksByBlueprint.has(id)) obeMarksByBlueprint.set(id, []);
+    obeMarksByBlueprint.get(id).push(row);
+  });
+  const normalizeAssessmentName = (value) => {
+    const compact = String(value || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    const testNumber = compact.match(/^(?:ct|classtest|quiztest|quiz)(?:no)?(\d+)$/);
+    return testNumber ? `ct${testNumber[1]}` : compact;
+  };
+  const obeGroupName = { ct: "classTests", assignment: "assignment", mid: "mid", final: "final" };
+  obeBlueprints.forEach((blueprint) => {
+    const groupName = obeGroupName[String(blueprint.assessmentType || "").toLowerCase()];
+    if (!groupName) return;
+    const bid = String(blueprint._id);
+    const entries = (obeMarksByBlueprint.get(bid) || []).map((mark) => {
+      const student = studentMap.get(String(mark.student));
+      if (!student) return null;
+      return {
+        ...student,
+        score: Number(mark.totalMarks || 0),
+        fullMarks: Number(blueprint.totalMarks || 0),
+        totalAll: Number(totalByStudent.get(String(mark.student)) || 0),
+      };
+    }).filter(Boolean);
+    const suggestion = formatSuggestion(`obe:${bid}`, blueprint.assessmentName, "", entries);
+    const existingIndex = result[groupName].findIndex((row) =>
+      normalizeAssessmentName(row.title) === normalizeAssessmentName(blueprint.assessmentName)
+    );
+    if (existingIndex < 0) result[groupName].push(suggestion);
+    else if (!result[groupName][existingIndex].candidateCount && suggestion.candidateCount) {
+      result[groupName][existingIndex] = suggestion;
     }
   });
 
@@ -502,7 +544,7 @@ const getCourseFileState = async (req, res) => {
       const sourceCourse = sourceCourseById.get(String(doc.sourceCourseId || doc.course));
       const section = String(doc.section || sourceCourse?.section || "").trim();
       doc.section = section;
-      const key = [doc.itemKey, section.toLowerCase(), doc.scopeKey || "", doc.band || "", doc.originalFileName || "", doc.label || ""].join("::");
+      const key = String(doc._id);
       if (seenDocuments.has(key)) return false;
       seenDocuments.add(key);
       return true;
@@ -844,8 +886,22 @@ const deleteCourseFileDocument = async (req, res) => {
 const downloadCourseFileDocument = async (req, res) => {
   try {
     const { courseId, documentId } = req.params;
-    const doc = await CourseFileDocument.findOne({ _id: documentId, course: courseId, createdBy: req.user.userId }).lean();
+    const course = await getTeacherCourse(courseId, req.user.userId);
+    if (!course) return res.status(404).json({ message: "Course not found" });
+    const doc = await CourseFileDocument.findOne({ _id: documentId, createdBy: req.user.userId }).lean();
     if (!doc) return res.status(404).json({ message: "Document not found" });
+    if (String(doc.course) !== String(course._id)) {
+      const sibling = await Course.findOne({
+        ...sameFacultyOfferingQuery(course, req.user.userId),
+        _id: doc.course,
+      }).select("_id").lean();
+      if (!sibling) return res.status(404).json({ message: "Document not found" });
+      const allowedItems = (String(course.courseType || "theory").toLowerCase() === "lab" ? LAB_CHECKLIST : THEORY_CHECKLIST)
+        .filter((item) => item.mode === "all_sections").map((item) => item.key);
+      if (![...allowedItems, "obe_gradesheet"].includes(doc.itemKey)) {
+        return res.status(404).json({ message: "Document not found" });
+      }
+    }
     const buffer = await downloadCourseFileBuffer(doc.storagePath);
     const name = String(doc.originalFileName || "document").replace(/[\r\n"]/g, "_");
     res.setHeader("Content-Type", doc.mimeType || "application/octet-stream");
