@@ -91,47 +91,10 @@ const getCtWeightLimitMessage = (courseType = 'theory', maxWeight) => {
     : `CT + Assignment + Attendance cannot cross 30. For theory courses, CT weight cannot be more than ${maxWeight}.`;
 };
 
-const LEGACY_COMPLAINT_CLOSED_MESSAGE =
-  "Complaint submission is currently closed by the course teacher.";
-const DEFAULT_ISSUE_CLOSED_MESSAGE =
-  "Issue submission is currently closed by the course teacher.";
+const { formatIssueSettings, sanitizeIssueSettings } = require("../utils/issueSettings");
 
-const normalizeIssueClosedMessage = (value) => {
-  const message = String(value || "").trim();
-  if (!message || message === LEGACY_COMPLAINT_CLOSED_MESSAGE) {
-    return DEFAULT_ISSUE_CLOSED_MESSAGE;
-  }
-  return message;
-};
-
-const sanitizeComplaintSettings = (raw = {}, existing = {}) => {
-  const allowStudentComplaints =
-    raw?.allowStudentComplaints === undefined
-      ? existing?.allowStudentComplaints !== false
-      : !(raw?.allowStudentComplaints === false || raw?.allowStudentComplaints === "false");
-
-  const fallbackMessage = normalizeIssueClosedMessage(existing?.closedMessage);
-
-  const closedMessage =
-    typeof raw?.closedMessage === "string" && raw.closedMessage.trim()
-      ? normalizeIssueClosedMessage(raw.closedMessage)
-      : fallbackMessage;
-
-  return {
-    allowStudentComplaints,
-    closedMessage,
-    updatedAt: new Date(),
-  };
-};
-
-const formatComplaintSettings = (course) => ({
-  allowStudentComplaints:
-    course?.complaintSettings?.allowStudentComplaints !== false,
-  closedMessage: normalizeIssueClosedMessage(
-    course?.complaintSettings?.closedMessage
-  ),
-  updatedAt: course?.complaintSettings?.updatedAt || null,
-});
+const sanitizeComplaintSettings = sanitizeIssueSettings;
+const formatComplaintSettings = formatIssueSettings;
 
 // POST /api/courses  (teacher only)
 const createCourse = async (req, res) => {
@@ -422,10 +385,14 @@ const updateCourse = async (req, res) => {
         return res.status(404).json({ message: "Course not found" });
       }
 
-      update.complaintSettings = sanitizeComplaintSettings(
-        complaintSettings,
-        existingCourse.complaintSettings || {}
-      );
+      try {
+        update.complaintSettings = sanitizeComplaintSettings(
+          complaintSettings,
+          existingCourse.complaintSettings || {}
+        );
+      } catch (settingError) {
+        return res.status(400).json({ message: settingError.message });
+      }
     }
 
     if (archived !== undefined) {

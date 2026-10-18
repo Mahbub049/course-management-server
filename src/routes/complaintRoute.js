@@ -1,6 +1,7 @@
 // server/src/routes/complaintRoute.js
 
 const express = require('express');
+const { issueAttachmentUpload } = require('../middleware/issueAttachmentUpload');
 const router = express.Router();
 
 const {
@@ -22,6 +23,7 @@ router.post(
   '/student',
   authMiddleware,
   requireStudent,
+  issueAttachmentUpload,
   createStudentComplaint
 );
 

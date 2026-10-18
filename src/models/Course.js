@@ -28,6 +28,15 @@ const projectFeatureSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const issueCategorySchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: true },
+    startAt: { type: Date, default: null },
+    endAt: { type: Date, default: null },
+  },
+  { _id: false }
+);
+
 const complaintSettingsSchema = new mongoose.Schema(
   {
     allowStudentComplaints: {
@@ -39,10 +48,13 @@ const complaintSettingsSchema = new mongoose.Schema(
       trim: true,
       default: "Issue submission is currently closed by the course teacher.",
     },
-    updatedAt: {
-      type: Date,
-      default: null,
+    categories: {
+      marks: { type: issueCategorySchema, default: () => ({}) },
+      attendance: { type: issueCategorySchema, default: () => ({}) },
+      general: { type: issueCategorySchema, default: () => ({}) },
     },
+    attendanceTargetPercentage: { type: Number, min: 0.01, max: 100, default: 50 },
+    updatedAt: { type: Date, default: null },
   },
   { _id: false }
 );

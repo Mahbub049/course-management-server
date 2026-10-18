@@ -53,6 +53,17 @@ const complaintSchema = new mongoose.Schema(
       default: null,
     },
 
+    attendanceRefs: { type: [attendanceRefSchema], default: undefined },
+    // An indexed key per selected session makes multi-session submissions
+    // mutually exclusive, including simultaneous requests from two tabs.
+    attendanceDedupKeys: { type: [String], default: undefined, select: false },
+    attachments: [{
+      name: { type: String, required: true },
+      mimeType: { type: String, required: true },
+      size: { type: Number, required: true },
+      storagePath: { type: String, required: true, select: false },
+    }],
+
     // Populated only for newly-created attendance complaints. Keeping it sparse
     // avoids deployment failures if historical attendance complaints contain duplicates.
     attendanceDedupKey: {
@@ -92,6 +103,11 @@ complaintSchema.index(
     sparse: true,
     name: "unique_student_attendance_complaint",
   }
+);
+
+complaintSchema.index(
+  { attendanceDedupKeys: 1 },
+  { unique: true, sparse: true, name: "unique_attendance_batch_sessions" }
 );
 
 module.exports = mongoose.model("Complaint", complaintSchema);

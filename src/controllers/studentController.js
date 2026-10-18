@@ -74,27 +74,9 @@ const roundPolicyTotal = (total) => {
   return Math.ceil((n - 1e-9) * 2) / 2;
 };
 
-const LEGACY_COMPLAINT_CLOSED_MESSAGE =
-  "Complaint submission is currently closed by the course teacher.";
-const DEFAULT_ISSUE_CLOSED_MESSAGE =
-  "Issue submission is currently closed by the course teacher.";
+const { formatIssueSettings } = require("../utils/issueSettings");
 
-const normalizeIssueClosedMessage = (value) => {
-  const message = String(value || "").trim();
-  if (!message || message === LEGACY_COMPLAINT_CLOSED_MESSAGE) {
-    return DEFAULT_ISSUE_CLOSED_MESSAGE;
-  }
-  return message;
-};
-
-const formatComplaintSettings = (course) => ({
-  allowStudentComplaints:
-    course?.complaintSettings?.allowStudentComplaints !== false,
-  closedMessage: normalizeIssueClosedMessage(
-    course?.complaintSettings?.closedMessage
-  ),
-  updatedAt: course?.complaintSettings?.updatedAt || null,
-});
+const formatComplaintSettings = formatIssueSettings;
 
 const normalizeCtPolicy = (course) => {
   const raw = course?.classTestPolicy || {};
