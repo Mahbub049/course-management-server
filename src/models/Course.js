@@ -37,6 +37,17 @@ const issueCategorySchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Temporary access does not overwrite a teacher's saved defaults.
+const temporaryIssueOverrideSchema = new mongoose.Schema(
+  {
+    mode: { type: String, enum: ["allow_only", "enable_selected", "disable_selected", "all_on", "all_off"], required: true },
+    categories: [{ type: String, enum: ["marks", "attendance", "general"] }],
+    startAt: { type: Date, default: null },
+    endAt: { type: Date, required: true },
+  },
+  { _id: false }
+);
+
 const complaintSettingsSchema = new mongoose.Schema(
   {
     allowStudentComplaints: {
@@ -54,6 +65,7 @@ const complaintSettingsSchema = new mongoose.Schema(
       general: { type: issueCategorySchema, default: () => ({}) },
     },
     attendanceTargetPercentage: { type: Number, min: 0.01, max: 100, default: 50 },
+    temporaryOverride: { type: temporaryIssueOverrideSchema, default: null },
     updatedAt: { type: Date, default: null },
   },
   { _id: false }

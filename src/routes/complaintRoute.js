@@ -16,6 +16,7 @@ const {
   getTeacherComplaints,
   replyToComplaint,
   resolveAttendanceComplaint,
+  bulkManageIssueAccess,
 } = require('../controllers/complaintController');
 
 // STUDENT routes
@@ -31,6 +32,7 @@ router.get('/student', authMiddleware, requireStudent, getStudentComplaints);
 
 // TEACHER routes
 router.get('/teacher', authMiddleware, requireTeacher, getTeacherComplaints);
+router.post('/teacher/access/bulk', authMiddleware, requireTeacher, bulkManageIssueAccess);
 
 router.post(
   '/teacher/:id/resolve-attendance',

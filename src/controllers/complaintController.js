@@ -5,7 +5,7 @@ const Enrollment = require("../models/Enrollment");
 const Assessment = require("../models/Assessment");
 const Attendance = require("../models/Attendance");
 const { withAttendanceStats } = require("../utils/issueAttendanceStats");
-const { categoryAccess, requiredAttendanceSessions, formatIssueSettings } = require("../utils/issueSettings");
+const { categoryAccess, requiredAttendanceSessions, formatIssueSettings, normalizeOverride, CATEGORY_KEYS } = require("../utils/issueSettings");
 const { uploadIssueAttachments, cleanupAttachments, attachSignedIssueFiles } = require("../utils/issueAttachments");
 
 const ALLOWED_STATUS = ["open", "in_review", "resolved", "rejected"];
@@ -206,11 +206,15 @@ async function getStudentComplaints(req, res) {
   try {
     const student = req.user?.userId;
     if (!student) return res.status(401).json({ message: "Unauthorized" });
-    const results = await Complaint.find({ student })
+    // Do not delete historical requests when a student is unenrolled.
+    // Restrict both teacher and student lists to current course enrollment.
+    const enrollments = await Enrollment.find({ student }).select("course").lean();
+    const activeCourseIds = enrollments.map((row) => row.course);
+    const results = await Complaint.find({ student, course: { $in: activeCourseIds } })
       .select("+attachments.storagePath")
       .populate("course", "code title section intake year semester")
       .populate("assessment", "name").sort({ createdAt: -1 });
-    res.json(await attachSignedIssueFiles(results));
+    res.json(await attachSignedIssueFiles(results.filter((item) => item.course)));
   } catch (err) {
     console.error("getStudentComplaints error", err);
     res.status(500).json({ message: "Could not load issues" });
@@ -230,7 +234,15 @@ async function getTeacherComplaints(req, res) {
       })
       .populate("student", "username name roll")
       .populate("assessment", "name").sort({ createdAt: -1 });
-    const visible = results.filter((c) => c.course);
+    // Keep submitted issues intact, but only expose those whose student is CURRENTLY
+    // enrolled in the issue's course. Re-enrollment makes the history visible again.
+    const visibleCourses = results.filter((c) => c.course);
+    const pairs = await Enrollment.find({
+      course: { $in: [...new Set(visibleCourses.map((c) => String(c.course._id)))] },
+      student: { $in: [...new Set(visibleCourses.map((c) => String(c.student?._id || c.student)))] },
+    }).select('course student').lean();
+    const active = new Set(pairs.map((e) => `${e.course}:${e.student}`));
+    const visible = visibleCourses.filter((c) => active.has(`${c.course._id}:${c.student?._id || c.student}`));
     res.json(await attachSignedIssueFiles(await withAttendanceStats(visible)));
   } catch (err) {
     console.error("getTeacherComplaints error", err);
@@ -256,6 +268,9 @@ async function replyToComplaint(req, res) {
     const issue = await Complaint.findById(req.params.id).populate("course", "createdBy");
     if (!issue) return res.status(404).json({ message: "Issue not found" });
     if (!isTeacherAuthorized(issue, req.user.userId)) return res.status(403).json({ message: "Not allowed to update this issue" });
+    if (!await Enrollment.exists({ course: issue.course._id || issue.course, student: issue.student })) {
+      return res.status(409).json({ message: "Student is no longer enrolled in this course" });
+    }
     const { reply, status } = req.body;
     if (reply !== undefined) issue.reply = String(reply).trim();
     if (status !== undefined) {
@@ -282,6 +297,9 @@ async function resolveAttendanceComplaint(req, res) {
       .populate("course", "createdBy code title");
     if (!selected) throw errorWithStatus("Issue not found", 404);
     if (!isTeacherAuthorized(selected, teacher)) throw errorWithStatus("Not allowed to update this issue", 403);
+    if (!await Enrollment.exists({ course: selected.course?._id, student: selected.student?._id })) {
+      throw errorWithStatus("Student is no longer enrolled in this course", 409);
+    }
     if (selected.category !== "attendance") throw errorWithStatus("This is not an attendance issue");
     if (!["open", "in_review"].includes(selected.status)) {
       throw errorWithStatus("Only pending attendance issues can be approved", 409);
@@ -348,7 +366,61 @@ async function resolveAttendanceComplaint(req, res) {
   }
 }
 
+// Apply teacher-wide issue access to active courses only. Each course retains its
+// original permanent settings when a temporary rule is installed.
+async function bulkManageIssueAccess(req, res) {
+  try {
+    const teacher = req.user?.userId;
+    if (!teacher) return res.status(401).json({ message: "Unauthorized" });
+    const { action, categories } = req.body || {};
+    const allowed = ["enable_all", "disable_all", "enable_categories", "disable_categories", "temporary", "clear_temporary"];
+    if (!allowed.includes(action)) return res.status(400).json({ message: "Invalid bulk action" });
+    const selected = Array.isArray(categories) ? [...new Set(categories)] : [];
+    if (["enable_categories", "disable_categories"].includes(action) &&
+      (!selected.length || selected.some((category) => !CATEGORY_KEYS.includes(category)))) {
+      return res.status(400).json({ message: "Select one or more valid categories" });
+    }
+    let temporary = null;
+    if (action === "temporary") {
+      try { temporary = normalizeOverride(req.body.temporaryOverride, { strict: true }); }
+      catch (err) { return res.status(400).json({ message: err.message }); }
+    }
+    const update = {};
+    if (action === "enable_all") {
+      update["complaintSettings.allowStudentComplaints"] = true;
+      for (const cat of CATEGORY_KEYS) {
+        update[`complaintSettings.categories.${cat}.enabled`] = true;
+        update[`complaintSettings.categories.${cat}.startAt`] = null;
+        update[`complaintSettings.categories.${cat}.endAt`] = null;
+      }
+    }
+    if (action === "disable_all") update["complaintSettings.allowStudentComplaints"] = false;
+    if (action === "enable_categories" || action === "disable_categories") {
+      for (const cat of selected) {
+        update[`complaintSettings.categories.${cat}.enabled`] = action === "enable_categories";
+        update[`complaintSettings.categories.${cat}.startAt`] = null;
+        update[`complaintSettings.categories.${cat}.endAt`] = null;
+      }
+    }
+    if (action !== "temporary") {
+      // Explicit teacher-wide immediate commands must win over scheduled rules.
+      update["complaintSettings.temporaryOverride"] = null;
+    } else {
+      update["complaintSettings.temporaryOverride"] = temporary;
+    }
+    update["complaintSettings.updatedAt"] = new Date();
+    const filter = { createdBy: teacher, archived: { $ne: true } };
+    const result = await Course.updateMany(filter, { $set: update });
+    const courses = await Course.find(filter).select("_id complaintSettings").lean();
+    return res.json({ matchedCount: result.matchedCount, modifiedCount: result.modifiedCount,
+      courses: courses.map((course) => ({ id: String(course._id), complaintSettings: formatIssueSettings(course) })) });
+  } catch (err) {
+    console.error("bulkManageIssueAccess error:", err);
+    return res.status(500).json({ message: "Unable to update course access" });
+  }
+}
+
 module.exports = {
   createStudentComplaint, getStudentComplaints, getTeacherComplaints,
-  replyToComplaint, resolveAttendanceComplaint,
+  replyToComplaint, resolveAttendanceComplaint, bulkManageIssueAccess,
 };

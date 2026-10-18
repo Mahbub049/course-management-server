@@ -416,7 +416,7 @@ const updateCourse = async (req, res) => {
       return res.status(404).json({ message: "Course not found" });
     }
 
-    res.json(course);
+    res.json({ ...course.toObject(), complaintSettings: formatComplaintSettings(course) });
   } catch (err) {
     console.error("Update course error", err);
     res.status(500).json({ message: "Server error" });

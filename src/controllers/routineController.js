@@ -637,58 +637,48 @@ function applyCourseContext(booking = {}, courseByStudent = new Map()) {
   };
 }
 
-async function resolveStudentTeacher(studentId) {
+// Derive selectable faculty strictly from CURRENT course enrollments.
+// Each faculty appears once even when teaching several courses to this student.
+async function resolveStudentTeacher(studentId, requestedTeacherId = "") {
   const enrollments = await Enrollment.find({ student: studentId })
     .populate({
       path: "course",
       select: "code title section intake archived createdBy",
-      populate: {
-        path: "createdBy",
-        select: "name email department designation profileImage",
-      },
-    })
-    .lean();
-
-  const activeCourses = enrollments
-    .map((item) => item.course)
+      populate: { path: "createdBy", select: "name email department designation profileImage" },
+    }).lean();
+  const activeCourses = enrollments.map((entry) => entry.course)
     .filter((course) => course && course.archived !== true && course.createdBy);
-
-  if (!activeCourses.length) {
-    return { teacher: null, courses: [] };
+  const facultyMap = new Map();
+  for (const course of activeCourses) {
+    const faculty = course.createdBy;
+    const id = String(faculty._id || faculty);
+    if (!facultyMap.has(id)) {
+      facultyMap.set(id, {
+        id,
+        name: faculty.name || "Course Teacher",
+        email: faculty.email || "",
+        department: faculty.department || "",
+        designation: faculty.designation || "",
+        profileImage: faculty.profileImage || "",
+        courses: [],
+      });
+    }
+    facultyMap.get(id).courses.push({
+      id: String(course._id), code: course.code || "", title: course.title || "",
+      intake: course.intake || "", section: course.section || "",
+    });
   }
-
-  const firstCourse = activeCourses[0];
-  const teacher = firstCourse.createdBy;
-  const teacherId = teacher?._id || teacher;
-  const selectedCourse = getCourseSnapshot(firstCourse);
-
+  const faculties = [...facultyMap.values()];
+  const selected = requestedTeacherId
+    ? facultyMap.get(String(requestedTeacherId))
+    : faculties[0];
   return {
-    teacherId,
-    selectedCourse,
-    teacher: teacher && typeof teacher === "object"
-      ? {
-          id: teacher._id?.toString?.() || String(teacherId),
-          name: teacher.name || "Course Teacher",
-          email: teacher.email || "",
-          department: teacher.department || "",
-          designation: teacher.designation || "",
-          profileImage: teacher.profileImage || "",
-        }
-      : {
-          id: String(teacherId),
-          name: "Course Teacher",
-          email: "",
-          department: "",
-          designation: "",
-          profileImage: "",
-        },
-    courses: activeCourses.map((course) => ({
-      id: course._id.toString(),
-      code: course.code || "",
-      title: course.title || "",
-      intake: course.intake || "",
-      section: course.section || "",
-    })),
+    faculties,
+    teacherId: selected?.id || null,
+    teacher: selected ? (({ courses: _courses, ...teacher }) => teacher)(selected) : null,
+    courses: selected?.courses || [],
+    selectedCourse: selected?.courses?.[0] || null,
+    invalidTeacher: !!requestedTeacherId && !selected,
   };
 }
 
@@ -893,11 +883,14 @@ const downloadMyDayOffApplication = async (req, res) => {
 const getStudentCounsellingInfo = async (req, res) => {
   try {
     const studentId = req.user.userId;
-    const { teacherId, teacher, courses, selectedCourse } = await resolveStudentTeacher(studentId);
+    const { teacherId, teacher, courses, selectedCourse, faculties, invalidTeacher } =
+      await resolveStudentTeacher(studentId, req.query.teacherId);
+    if (invalidTeacher) return res.status(403).json({ message: "This faculty is not assigned to your enrolled courses" });
 
     if (!teacherId) {
       return res.json({
         teacher: null,
+        faculties: [],
         courses: [],
         routine: null,
         counsellingSlots: [],
@@ -916,6 +909,7 @@ const getStudentCounsellingInfo = async (req, res) => {
 
     return res.json({
       teacher,
+      faculties,
       courses,
       routine: routine
         ? {
@@ -940,7 +934,9 @@ const getStudentCounsellingInfo = async (req, res) => {
 const createStudentCounsellingBooking = async (req, res) => {
   try {
     const studentId = req.user.userId;
-    const { teacherId, teacher, selectedCourse } = await resolveStudentTeacher(studentId);
+    const { teacherId, teacher, selectedCourse, invalidTeacher } =
+      await resolveStudentTeacher(studentId, req.body?.teacherId);
+    if (invalidTeacher) return res.status(403).json({ message: "This faculty is not assigned to your enrolled courses" });
 
     if (!teacherId) {
       return res.status(404).json({ message: "No course teacher found for this student" });

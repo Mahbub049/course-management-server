@@ -5,8 +5,7 @@ const MAX_FILES = 5;
 const MAX_MB = 10;
 const ALLOWED = new Set([
   ".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
-  ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
-  ".txt", ".csv", ".zip", ".heic",
+  ".doc", ".docx",
 ]);
 
 const upload = multer({

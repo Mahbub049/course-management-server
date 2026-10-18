@@ -11,6 +11,7 @@ const studentRoute = require('./routes/studentRoute');
 const complaintRoute = require('./routes/complaintRoute');
 const attendanceRoutes = require('./routes/attendanceRoutes');
 const startKeepAlive = require('./utils/keepAlive');
+const { startIssueOverrideCleanup } = require('./utils/issueOverrideScheduler');
 const { startFacultyCalendarPushScheduler } = require("./utils/facultyCalendarPush");
 const projectFormRoutes = require('./routes/projectFormRoutes');
 const labSubmissionRoutes = require('./routes/labSubmissionRoutes');
@@ -132,6 +133,7 @@ connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT} 🚀`);
     startKeepAlive();
+    startIssueOverrideCleanup();
     startFacultyCalendarPushScheduler();
   });
 });
