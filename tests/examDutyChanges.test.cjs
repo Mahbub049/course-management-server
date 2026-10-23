@@ -11,6 +11,13 @@ const users = [{_id:ids.mmss,role:'teacher',shortCode:'MMSS',name:'Faculty MMSS'
 let sessions = [{_id:ids.sid,season:'Fall',year:2026,examType:'Mid Term',name:'Fall 2026',importedBy:ids.mmss}];
 const mkRecord = (_id,date,course,room,invigilatorCodes)=>({ _id,session:ids.sid,date,day:'Sat',startTime:'10:00 AM',endTime:'11:30 AM',time:'10:00 AM – 11:30 AM',program:'B.Sc. in CSE',intake:'54',section:'1',course,room,category:'exam',invigilatorCodes,invigilators:invigilatorCodes.join(', '),updatedAt:new Date('2026-10-23') });
 let records = [mkRecord(ids.a,'2026-10-24','CSE 101','2705',['MMSS','MMO']),mkRecord(ids.duplicate,'2026-10-24','CSE 101','2705',['MMSS','MMO']),mkRecord(ids.b,'2026-10-25','CSE 207','3706',['JFM']),mkRecord(ids.c,'2026-10-24','ENG 101','2709',['JFM']),mkRecord(ids.nukk,'2026-10-26','PHY 201','2710',['NUKK']),mkRecord(ids.nukkClash,'2026-10-24','CSE 303','2810',['NUKK'])];
+// Published course-teacher rows are independent of invigilator duties.
+records.find(x=>x._id===ids.a).courseTeacher = 'MMSS';
+records.find(x=>x._id===ids.duplicate).courseTeacher = 'MMSS';
+records.find(x=>x._id===ids.b).courseTeacher = 'JFM';
+records.find(x=>x._id===ids.c).courseTeacher = 'MMSS'; // Teaching an exam without invigilating it
+records.find(x=>x._id===ids.nukk).courseTeacher = 'MMSSa'; // A similar code must not match
+records.find(x=>x._id===ids.nukkClash).courseTeacher = 'Dr. MMSS, JFM'; // Multi-teacher field
 let changes = [], proxies = [],seq=10;
 const equal=(a,b)=>String(a)===String(b);
 const match=(r,q={})=>Object.entries(q).every(([k,v])=>{
@@ -53,6 +60,14 @@ const res=()=>({statusCode:200,status(n){this.statusCode=n;return this},json(bod
 const invoke=async(method,uid,params={},body={},query={})=>{const r=res();await ctrl[method]({user:{userId:uid},params:{id:ids.sid,...params},body,query},r);return r;};
 (async()=>{
   let x=await invoke('mySchedule',ids.mmss);assert.equal(x.statusCode,200);assert.equal(x.body.rows.length,1,'legacy duplicate rows deduplicated');
+  assert.equal(x.body.courseExams.length,3,'own taught exams across all routine rows, legacy duplicate collapsed');
+  assert.equal(x.body.courseExams[0].course,'CSE 101');
+  assert.equal(x.body.courseExams.some(r=>r.course==='ENG 101'),true,'taught exam listed without invigilation assignment');
+  assert.equal(x.body.courseExams.some(r=>r.course==='PHY 201'),false,'shortcode is matched as a whole token, not a substring');
+  assert.equal(x.body.officialCount,1,'course exams do not change assigned duty totals');
+  const other=await invoke('mySchedule',ids.jfm);
+  assert.equal(other.body.courseExams.length,2,'each faculty only receives its own taught exams');
+
   x=await invoke('createChange',ids.third,{}, {kind:'transfer',sourceRecordId:ids.a,targetCode:'JFM'});assert.equal(x.statusCode,403);
   x=await invoke('createChange',ids.mmss,{}, {kind:'exchange',sourceRecordId:ids.a,targetRecordId:ids.b,targetCode:'JFM'});
   assert.equal(x.statusCode,409);assert.equal(x.body.code,'DUTY_CONFLICT');assert.equal(x.body.theirConflicts.length,1);
@@ -103,5 +118,5 @@ const invoke=async(method,uid,params={},body={},query={})=>{const r=res();await 
   x=await invoke('revertChange',ids.futureUser,{changeId:offlineTransfer});assert.equal(x.statusCode,200);
   x=await invoke('mySchedule',ids.mmss);assert.equal(x.body.rows[0].assignment,'official');
   x=await invoke('deleteSession',ids.mmss,{}, {confirm:'Fall 2026 Mid Term'});assert.equal(x.statusCode,200);assert.equal(x.body.deletedChanges,4);assert.equal(changes.length,0);
-  console.log('PASS: registered/unregistered exchange and transfer, overlap warnings, future signup, revert permissions, duplicate protection and delete cascade.');
+  console.log('PASS: own course exams, exact faculty-code matching, deduplication, registered/unregistered exchange and transfer, overlap warnings, future signup, revert permissions and delete cascade.');
 })().catch(e=>{console.error(e);process.exitCode=1});

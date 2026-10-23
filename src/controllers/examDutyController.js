@@ -186,12 +186,30 @@ exports.deleteSession = async (req, res) => {
   } catch (e) { return sendError(res, e); }
 };
 
+// Course teaching is separate from invigilation. A teacher may supervise an
+// examination without having been assigned as its invigilator. Read the shared
+// routine by courseTeacher shortcode; do not include these rows in duty/billing.
+async function getOwnCourseExams(sessionId, teacher) {
+  const code = upperCode(teacher);
+  // Prefilter in MongoDB, then verify complete tokens: MM is not MMSS, etc.
+  const safeCode = code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const possible = await Record.find({
+    session: sessionId,
+    category: 'exam',
+    courseTeacher: new RegExp(safeCode, 'i'),
+  }).lean();
+  return uniqueDuties(possible.filter(row => codes(row.courseTeacher).includes(code)));
+}
+
 exports.mySchedule = async (req, res) => {
   try {
     const teacher = await faculty(req, res); if (!teacher) return;
     const session = await getSession(req.params.id, res); if (!session) return;
-    const rows = await getMyRows(session._id, teacher);
-    return res.json({ session, faculty: { name: teacher.name, shortCode: teacher.shortCode }, rows, officialCount: rows.filter(x => x.assignment === 'official').length, proxyCount: rows.filter(x => x.assignment === 'proxy').length, incomingChanges: rows.filter(x => x.changeSide === 'incoming').length });
+    const [rows, courseExams] = await Promise.all([
+      getMyRows(session._id, teacher),
+      getOwnCourseExams(session._id, teacher),
+    ]);
+    return res.json({ session, faculty: { name: teacher.name, shortCode: teacher.shortCode }, rows, courseExams, officialCount: rows.filter(x => x.assignment === 'official').length, proxyCount: rows.filter(x => x.assignment === 'proxy').length, incomingChanges: rows.filter(x => x.changeSide === 'incoming').length });
   } catch (e) { return sendError(res, e); }
 };
 
