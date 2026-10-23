@@ -1,0 +1,14 @@
+const router = require('express').Router();
+const { authMiddleware, requireTeacher } = require('../middleware/authMiddleware');
+const ctrl = require('../controllers/examDutyController');
+router.use(authMiddleware, requireTeacher);
+router.get('/sessions', ctrl.listSessions);
+router.post('/import', ctrl.importRows);
+router.delete('/sessions/:id', ctrl.deleteSession);
+router.get('/sessions/:id/mine', ctrl.mySchedule);
+router.get('/sessions/:id/search', ctrl.searchFaculty);
+router.post('/sessions/:id/proxies', ctrl.addProxy);
+router.delete('/sessions/:id/proxies/:recordId', ctrl.removeProxy);
+router.post('/sessions/:id/changes', ctrl.createChange);
+router.delete('/sessions/:id/changes/:changeId', ctrl.revertChange);
+module.exports = router;

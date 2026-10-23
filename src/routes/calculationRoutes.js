@@ -3,6 +3,8 @@ const router = express.Router();
 const { authMiddleware, requireTeacher } = require("../middleware/authMiddleware");
 const {
   getCalculationBootstrap,
+  previewExamDutyBill,
+  syncExamDutyBill,
   listDutyCalculations,
   getDutyCalculation,
   createDutyCalculation,
@@ -14,6 +16,8 @@ const {
 router.use(authMiddleware, requireTeacher);
 
 router.get("/bootstrap", getCalculationBootstrap);
+router.get("/exam-duties/:sessionId", previewExamDutyBill);
+router.post("/exam-duties/:sessionId/sync", syncExamDutyBill);
 router.get("/duties", listDutyCalculations);
 router.get("/duties/:id", getDutyCalculation);
 router.post("/duties", createDutyCalculation);

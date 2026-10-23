@@ -11,7 +11,6 @@ const studentRoute = require('./routes/studentRoute');
 const complaintRoute = require('./routes/complaintRoute');
 const attendanceRoutes = require('./routes/attendanceRoutes');
 const startKeepAlive = require('./utils/keepAlive');
-const { startIssueOverrideCleanup } = require('./utils/issueOverrideScheduler');
 const { startFacultyCalendarPushScheduler } = require("./utils/facultyCalendarPush");
 const projectFormRoutes = require('./routes/projectFormRoutes');
 const labSubmissionRoutes = require('./routes/labSubmissionRoutes');
@@ -21,6 +20,7 @@ const academicCalendarRoutes = require("./routes/academicCalendarRoutes");
 const notebookRoutes = require("./routes/notebookRoutes");
 const notificationRoutes = require("./routes/notificationRoutes");
 const calculationRoutes = require("./routes/calculationRoutes");
+const examDutyRoutes = require("./routes/examDutyRoutes");
 const {
   MAX_SUBMISSION_UPLOAD_MB,
 } = require('./middleware/submissionUploadMiddleware');
@@ -110,6 +110,7 @@ app.use("/api/academic-calendar", academicCalendarRoutes);
 app.use("/api/notebook", notebookRoutes);
 app.use("/api/notifications", notificationRoutes);
 app.use("/api/calculations", calculationRoutes);
+app.use("/api/exam-duties", examDutyRoutes);
 
 app.use((err, _req, res, next) => {
   if (err?.code === 'LIMIT_FILE_SIZE') {
@@ -133,7 +134,6 @@ connectDB().then(() => {
   app.listen(PORT, () => {
     console.log(`Server running on port ${PORT} 🚀`);
     startKeepAlive();
-    startIssueOverrideCleanup();
     startFacultyCalendarPushScheduler();
   });
 });

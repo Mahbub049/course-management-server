@@ -14,9 +14,13 @@ const dutyEntrySchema = new mongoose.Schema(
     courseTeacher: { type: String, trim: true, default: "" },
     invigilators: { type: String, trim: true, default: "" },
     room: { type: String, trim: true, default: "" },
+    assignment: { type: String, trim: true, default: "" },
+    category: { type: String, trim: true, default: "" },
+    counterpartyCode: { type: String, trim: true, default: "" },
+    sourceRecordId: { type: mongoose.Schema.Types.ObjectId, default: null },
     dutyType: {
       type: String,
-      enum: ["day", "evening"],
+      enum: ["day", "evening", "review"],
       required: true,
       default: "day",
     },
@@ -38,6 +42,8 @@ const facultyDutyCalculationSchema = new mongoose.Schema(
     semesterOrder: { type: Number, default: 0 },
     semesterSort: { type: Number, default: 0, index: true },
     sourceFileName: { type: String, trim: true, default: "" },
+    sourceType: { type: String, enum: ["manual", "exam_duties"], default: "manual" },
+    sourceSession: { type: mongoose.Schema.Types.ObjectId, ref: "ExamDutySession", default: null },
     duties: { type: [dutyEntrySchema], default: [] },
     status: {
       type: String,
