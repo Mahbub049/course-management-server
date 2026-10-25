@@ -117,6 +117,40 @@ const invoke=async(method,uid,params={},body={},query={})=>{const r=res();await 
   assert.equal(x.body.rows[0].assignment,'transfer');
   x=await invoke('revertChange',ids.futureUser,{changeId:offlineTransfer});assert.equal(x.statusCode,200);
   x=await invoke('mySchedule',ids.mmss);assert.equal(x.body.rows[0].assignment,'official');
-  x=await invoke('deleteSession',ids.mmss,{}, {confirm:'Fall 2026 Mid Term'});assert.equal(x.statusCode,200);assert.equal(x.body.deletedChanges,4);assert.equal(changes.length,0);
+  // V9: the recipient of exchange #1 is the current owner, and can exchange
+  // that received duty again. A parent handoff must be reverted in LIFO order.
+  x=await invoke('createChange',ids.jfm,{}, {kind:'exchange',sourceRecordId:ids.b,targetRecordId:ids.nukk,targetCode:'NUKK',allowConflict:true});
+  assert.equal(x.statusCode,201,'JFM swaps with NUKK');
+  const parent=x.body.changeId;
+  x=await invoke('mySchedule',ids.jfm);
+  assert.equal(x.body.rows.some(r=>r._id===ids.nukk && r.assignment==='exchange'),true);
+  x=await invoke('searchFaculty',ids.mmss,{}, {},{code:'JFM'});
+  assert.equal(x.body.rows.some(r=>r._id===ids.nukk && r.assignment==='exchange' && !r.unavailable),true,
+    'peer search includes currently owned received duty');
+  x=await invoke('createChange',ids.jfm,{}, {kind:'exchange',sourceRecordId:ids.nukk,targetRecordId:ids.a,targetCode:'MMSS',allowConflict:true});
+  assert.equal(x.statusCode,201,'JFM can exchange a received NUKK duty with MMSS');
+  const child=x.body.changeId;
+  x=await invoke('mySchedule',ids.jfm);
+  assert.equal(x.body.rows.some(r=>r._id===ids.a && r.assignment==='exchange'),true,'JFM currently holds MMSS exam');
+  assert.equal(x.body.rows.some(r=>r._id===ids.nukk && r.assignment==='exchanged_out'),true);
+  assert.equal(x.body.rows.find(r=>r._id===ids.b)?.canRevert,false,'parent cannot be reverted while child exists');
+  x=await invoke('mySchedule',ids.mmss);
+  assert.equal(x.body.rows.some(r=>r._id===ids.nukk && r.assignment==='exchange'),true,'MMSS gets the NUKK exam via JFM');
+  x=await invoke('revertChange',ids.jfm,{changeId:parent});
+  assert.equal(x.statusCode,409);assert.equal(x.body.code,'REVERT_DEPENDENT_CHANGE');
+  x=await invoke('revertChange',ids.mmss,{changeId:child});
+  assert.equal(x.statusCode,200,'either current participant can unwind top of stack');
+  x=await invoke('mySchedule',ids.jfm);
+  assert.equal(x.body.rows.some(r=>r._id===ids.nukk && r.assignment==='exchange'),true,'JFM gets NUKK duty back');
+  assert.equal(x.body.rows.some(r=>r._id===ids.a && r.assignment==='exchange'),false);
+  x=await invoke('mySchedule',ids.mmss);
+  assert.equal(x.body.rows.some(r=>r._id===ids.a && r.assignment==='official'),true,'MMSS original restored after child revert');
+  x=await invoke('mySchedule',ids.nukkUser);
+  assert.equal(x.body.rows.some(r=>r._id===ids.b && r.assignment==='exchange'),true,'NUKK still owns exchanged JFM duty');
+  x=await invoke('revertChange',ids.jfm,{changeId:parent});
+  assert.equal(x.statusCode,200,'parent may now revert');
+  x=await invoke('mySchedule',ids.jfm);
+  assert.equal(x.body.rows.some(r=>r._id===ids.b && r.assignment==='official'),true,'JFM original restored');
+  x=await invoke('deleteSession',ids.mmss,{}, {confirm:'Fall 2026 Mid Term'});assert.equal(x.statusCode,200);assert.equal(x.body.deletedChanges,6);assert.equal(changes.length,0);
   console.log('PASS: own course exams, exact faculty-code matching, deduplication, registered/unregistered exchange and transfer, overlap warnings, future signup, revert permissions and delete cascade.');
 })().catch(e=>{console.error(e);process.exitCode=1});
