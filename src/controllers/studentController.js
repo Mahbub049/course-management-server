@@ -562,7 +562,7 @@ const getStudentCourses = async (req, res) => {
 
     const courseIds = courseDocs.map((c) => c._id);
 
-    const [assessments, marks, pendingSubmissionAssessments] = await Promise.all([
+    const [assessments, marks, pendingSubmissionAssessments, allGradeAssessments] = await Promise.all([
       Assessment.find({
         course: { $in: courseIds },
         isPublished: true,
@@ -577,6 +577,7 @@ const getStudentCourses = async (req, res) => {
         isPublished: true,
         structureType: 'lab_submission',
       }).sort({ createdAt: -1, order: 1 }),
+      Assessment.find({ course: { $in: courseIds }, structureType: { $ne: 'lab_submission' } }).select('course isPublished').lean(),
     ]);
 
     const publishedAssessmentIds = new Set(
@@ -625,6 +626,12 @@ const getStudentCourses = async (req, res) => {
     });
     const submissionMap = Object.fromEntries(submissionDocs.map((s) => [String(s.assessment), s]));
 
+    const gradeAssessmentCounts = {};
+    allGradeAssessments.forEach((a) => {
+      const cid = String(a.course);
+      gradeAssessmentCounts[cid] = (gradeAssessmentCounts[cid] || 0) + 1;
+    });
+
     const courses = courseDocs.map((course) => {
       const cid = course._id.toString();
       const aList = assessmentsByCourse[cid] || [];
@@ -648,11 +655,15 @@ const getStudentCourses = async (req, res) => {
           markDocsByAssessmentByCourse[cid] || {}
         );
 
+        const gradeVisible = computed.maxPossible >= 100 - 1e-9 &&
+          assessmentCount === (gradeAssessmentCounts[cid] || 0) &&
+          marksCount >= assessmentCount;
         summary = {
           total: computed.currentTotal,
           ctMain: computed.ctMain,
           labMain: computed.labMain || 0,
-          grade: computed.grade,
+          grade: gradeVisible ? computed.grade : null,
+          gradeVisible,
           maxPossible: computed.maxPossible,
         };
       }
@@ -786,6 +797,13 @@ const getStudentCourseDetails = async (req, res) => {
       marksByAssessment,
       markDocsByAssessment
     );
+    // Grade is private until the published assessment plan covers 100/100
+    // and the student's marks are recorded for every assessment.
+    const allGradeAssessmentCount = await Assessment.countDocuments({ course: courseId, structureType: { $ne: 'lab_submission' } });
+    const gradeVisible = summary.maxPossible >= 100 - 1e-9 &&
+      assessments.length === allGradeAssessmentCount &&
+      assessments.every((a) => Object.prototype.hasOwnProperty.call(marksByAssessment, String(a._id)));
+    const studentSummary = { ...summary, grade: gradeVisible ? summary.grade : null, gradeVisible };
 
     res.set({
       'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate',
@@ -819,11 +837,12 @@ const getStudentCourseDetails = async (req, res) => {
       totalObtained: summary.totalObtained,
       ctMain: summary.ctMain,
       labMain: summary.labMain || 0,
-      grade: summary.grade,
+      grade: studentSummary.grade,
+      gradeVisible,
       aPlusInfo: summary.aPlusInfo,
       aPlusNeeded: summary.aPlusNeeded,
       maxPossible: summary.maxPossible,
-      summary,
+      summary: studentSummary,
     });
   } catch (err) {
     console.error('getStudentCourseDetails error', err);

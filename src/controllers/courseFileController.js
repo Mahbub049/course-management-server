@@ -149,6 +149,7 @@ function formatSuggestion(scopeKey, title, assessmentId, entries = []) {
     title,
     assessmentId: assessmentId || "",
     candidateCount: entries.length,
+    allCandidates: [...entries].sort((a, b) => String(a.roll).localeCompare(String(b.roll), undefined, { numeric: true })).map(displayCandidate),
     bands: {
       best: picked.best.map(displayCandidate),
       mediocre: picked.mediocre.map(displayCandidate),
